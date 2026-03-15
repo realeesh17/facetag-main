@@ -1,0 +1,19 @@
+project_id = "kfjcycwgwdxhjqrilnfm"
+
+[functions.cluster-faces]
+verify_jwt = false
+
+[functions.generate-qr]
+verify_jwt = false
+
+[functions.send-qr-email]
+verify_jwt = false
+
+[functions.firebase-custom-token]
+verify_jwt = false
+
+[functions.chat]
+verify_jwt = false
+
+[functions.suggest-similar]
+verify_jwt = false

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS person_images_face_id_key ON public.person_images (face_id) WHERE face_id IS NOT NULL;
