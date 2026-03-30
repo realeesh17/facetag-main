@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
   Upload, Users, QrCode, Image as ImageIcon, X, Grid3X3,
-  BarChart3, CheckCircle2, XCircle, Loader2, RefreshCw, AlertTriangle, ArrowRight, Copy, Check, Merge, Trash2, Sparkles,
+  BarChart3, CheckCircle2, XCircle, Loader2, RefreshCw, AlertTriangle, ArrowRight, Copy, Check, Merge, Trash2, Sparkles, Eye, ChevronLeft, ChevronRight,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -586,9 +587,18 @@ export default function EventDetail() {
                         ))}
                       </div>
 
-                      {!uploading && (
-                        <Button onClick={() => setActiveTab("cluster")} className="w-full">
-                          Go to Clustering <ArrowRight className="ml-2 h-4 w-4" />
+                      {!uploading && uploadedImageUrls.length > 0 && (
+                        <Button
+                          onClick={async () => {
+                            setActiveTab("cluster");
+                            // Small delay to let tab switch animate, then auto-start clustering
+                            setTimeout(() => handleCluster(), 300);
+                          }}
+                          className="w-full bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-600/90 text-white font-semibold"
+                          size="lg"
+                        >
+                          <Sparkles className="mr-2 h-5 w-5" />
+                          Start Clustering
                         </Button>
                       )}
                     </div>
@@ -604,17 +614,58 @@ export default function EventDetail() {
               <CardContent>
                 <div className="space-y-4">
                   <div className="text-center py-8">
-                    <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground mb-6">
-                      {uploadedImageUrls.length > 0 
-                        ? `${uploadedImageUrls.length} new photos ready to cluster`
-                        : event.status === 'created' 
-                          ? 'Upload photos first, then come back here to cluster'
-                          : 'Click below to run (or re-run) face clustering on all uploaded photos'}
-                    </p>
-                    <Button onClick={handleCluster} disabled={clustering} size="lg">
-                      {clustering ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Clustering...</> : "Start Clustering"}
-                    </Button>
+                    {clustering ? (
+                      <div className="space-y-6">
+                        {/* Animated clustering visualization */}
+                        <div className="relative w-32 h-32 mx-auto">
+                          {/* Orbiting dots */}
+                          {[0, 1, 2, 3, 4, 5].map((i) => (
+                            <div
+                              key={i}
+                              className="absolute w-4 h-4 rounded-full bg-primary"
+                              style={{
+                                top: "50%", left: "50%",
+                                transform: `rotate(${i * 60}deg) translateX(48px) translateY(-50%)`,
+                                animation: `spin 2s linear infinite`,
+                                animationDelay: `${i * 0.33}s`,
+                                opacity: 0.3 + (i * 0.12),
+                              }}
+                            />
+                          ))}
+                          {/* Center icon */}
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center animate-pulse">
+                              <Users className="h-8 w-8 text-primary" />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-lg font-semibold text-foreground">Clustering in progress...</p>
+                          <p className="text-sm text-muted-foreground">AI is analyzing faces and grouping them</p>
+                          {/* Animated steps */}
+                          <div className="flex flex-col items-center gap-1 mt-4 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Detecting faces in photos</span></div>
+                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Matching similar faces</span></div>
+                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Creating person groups</span></div>
+                          </div>
+                        </div>
+                        <style>{`@keyframes spin { from { transform: rotate(var(--start-angle, 0deg)) translateX(48px) translateY(-50%); } to { transform: rotate(calc(var(--start-angle, 0deg) + 360deg)) translateX(48px) translateY(-50%); } }`}</style>
+                      </div>
+                    ) : (
+                      <>
+                        <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+                        <p className="text-muted-foreground mb-6">
+                          {uploadedImageUrls.length > 0
+                            ? `${uploadedImageUrls.length} new photos ready to cluster`
+                            : event.status === 'created'
+                              ? 'Upload photos first, then come back here to cluster'
+                              : 'Click below to run (or re-run) face clustering on all uploaded photos'}
+                        </p>
+                        <Button onClick={handleCluster} disabled={clustering} size="lg">
+                          <Sparkles className="mr-2 h-5 w-5" />Start Clustering
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -754,6 +805,85 @@ export default function EventDetail() {
   );
 }
 
+// ── PersonPhotosModal ──
+function PersonPhotosModal({ person, open, onClose }: { person: PersonData; open: boolean; onClose: () => void }) {
+  const [photos, setPhotos] = useState<{ id: string; image_url: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [lightbox, setLightbox] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    supabase.from("person_images").select("id, image_url").eq("person_id", person.id)
+      .order("created_at", { ascending: true })
+      .then(({ data }) => { setPhotos(data || []); setLoading(false); });
+  }, [open, person.id]);
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {person.previewImage && (
+              <img src={person.previewImage} className="w-8 h-8 rounded-full object-cover" />
+            )}
+            {person.name || `Person ${person.person_id}`}
+            <span className="text-sm font-normal text-muted-foreground ml-1">
+              — {person.imageCount ?? 0} photos
+            </span>
+          </DialogTitle>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        ) : photos.length === 0 ? (
+          <div className="text-center py-16 text-muted-foreground">No photos found</div>
+        ) : (
+          <div className="overflow-y-auto flex-1">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 p-1">
+              {photos.map((photo, idx) => (
+                <div
+                  key={photo.id}
+                  className="aspect-square rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary transition-all relative group"
+                  onClick={() => setLightbox(idx)}
+                >
+                  <img src={photo.image_url} alt={`Photo ${idx + 1}`}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                    <Eye className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Lightbox inside modal */}
+        {lightbox !== null && (
+          <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center" onClick={() => setLightbox(null)}>
+            <button className="absolute top-4 right-4 p-2 text-white/70 hover:text-white" onClick={() => setLightbox(null)}>
+              <X className="h-6 w-6" />
+            </button>
+            <button className="absolute left-4 top-1/2 -translate-y-1/2 p-2 text-white/70 hover:text-white"
+              onClick={e => { e.stopPropagation(); setLightbox(i => i !== null ? Math.max(0, i - 1) : null); }}>
+              <ChevronLeft className="h-8 w-8" />
+            </button>
+            <img src={photos[lightbox].image_url} className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg"
+              onClick={e => e.stopPropagation()} />
+            <button className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-white/70 hover:text-white"
+              onClick={e => { e.stopPropagation(); setLightbox(i => i !== null ? Math.min(photos.length - 1, i + 1) : null); }}>
+              <ChevronRight className="h-8 w-8" />
+            </button>
+            <p className="absolute bottom-4 text-white/50 text-sm">{lightbox + 1} / {photos.length}</p>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── PersonCard ──
 
 interface PersonCardProps {
@@ -772,6 +902,7 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showPhotos, setShowPhotos] = useState(false);
   const { toast } = useToast();
 
   const handleSave = () => { if (name.trim()) { onSaveName(person.id, name); setEditing(false); } };
@@ -825,6 +956,15 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
         )}
         {!mergeMode && (
           <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-full" />
+        )}
+        {/* View Photos button on hover */}
+        {!mergeMode && (person.imageCount ?? 0) > 0 && (
+          <button
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200 bg-white/90 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center gap-1 hover:bg-white shadow-md whitespace-nowrap z-10"
+            onClick={e => { e.stopPropagation(); setShowPhotos(true); }}
+          >
+            <Eye className="h-3 w-3" />View Photos
+          </button>
         )}
         {mergeMode && isSelectedForMerge && (
           <div className="absolute inset-0 bg-primary/20 flex items-center justify-center rounded-full">
@@ -886,6 +1026,9 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
           </Button>
         </div>
       )}
+
+      {/* Photos Modal */}
+      <PersonPhotosModal person={person} open={showPhotos} onClose={() => setShowPhotos(false)} />
     </div>
   );
 }

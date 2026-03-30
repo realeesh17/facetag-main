@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { ThemeProvider } from "@/hooks/useTheme";
 import Landing from "./pages/Landing";
 import Auth from "./pages/Auth";
 import ResetPassword from "./pages/ResetPassword";
@@ -19,55 +20,30 @@ import { AIAssistant } from "./components/AIAssistant";
 const queryClient = new QueryClient();
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/auth" element={<Auth />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          
-          {/* Admin routes */}
-          <Route path="/admin/events" element={
-            <ProtectedRoute requiredRole="admin">
-              <AdminEvents />
-            </ProtectedRoute>
-          } />
-          <Route path="/admin/create-event" element={
-            <ProtectedRoute requiredRole="admin">
-              <CreateEvent />
-            </ProtectedRoute>
-          } />
-          <Route path="/admin/event/:eventId" element={
-            <ProtectedRoute requiredRole="admin">
-              <EventDetail />
-            </ProtectedRoute>
-          } />
-          <Route path="/admin/event/:eventId/analytics" element={
-            <ProtectedRoute requiredRole="admin">
-              <Analytics />
-            </ProtectedRoute>
-          } />
-          
-          {/* User routes */}
-          <Route path="/user/scan" element={
-            <ProtectedRoute requireAuth>
-              <ScanQR />
-            </ProtectedRoute>
-          } />
-          
-          {/* Public gallery routes - no auth required */}
-          <Route path="/event/:eventId/:personId/:token" element={<Gallery />} />
-          <Route path="/gallery/:qrCode" element={<Gallery />} />
-          
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-        <AIAssistant />
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+  <ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/auth" element={<Auth />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/admin/events" element={<ProtectedRoute requiredRole="admin"><AdminEvents /></ProtectedRoute>} />
+            <Route path="/admin/create-event" element={<ProtectedRoute requiredRole="admin"><CreateEvent /></ProtectedRoute>} />
+            <Route path="/admin/event/:eventId" element={<ProtectedRoute requiredRole="admin"><EventDetail /></ProtectedRoute>} />
+            <Route path="/admin/event/:eventId/analytics" element={<ProtectedRoute requiredRole="admin"><Analytics /></ProtectedRoute>} />
+            <Route path="/user/scan" element={<ProtectedRoute requireAuth><ScanQR /></ProtectedRoute>} />
+            <Route path="/event/:eventId/:personId/:token" element={<Gallery />} />
+            <Route path="/gallery/:qrCode" element={<Gallery />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+          <AIAssistant />
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ThemeProvider>
 );
 
 export default App;

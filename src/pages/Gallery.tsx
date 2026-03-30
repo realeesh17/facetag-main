@@ -4,9 +4,9 @@ import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import {
   Download, Share2, X, ZoomIn, ZoomOut, Play, Pause,
-  ChevronLeft, ChevronRight, Check, Heart, Clock, Users,
-  User, Smile, Grid, Image as ImageIcon, Facebook, Twitter,
-  Link2, Sparkles, Filter,
+  ChevronLeft, ChevronRight, Check, Heart, Users, User,
+  Smile, Grid, Image as ImageIcon, Facebook, Twitter,
+  Link2, Filter, MessageCircle, Camera
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,8 +14,8 @@ import { useToast } from "@/hooks/use-toast";
 import { getSafeErrorMessage } from "@/lib/error-handler";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  DropdownMenuSeparator, DropdownMenuLabel,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -33,11 +33,13 @@ interface PersonData {
   id: string;
   name: string;
   eventId: string;
+  eventName: string;
   images: ImageData[];
+  totalEventPhotos: number;
 }
 
 type FilterType = "none" | "grayscale" | "sepia" | "brightness" | "contrast";
-type SmartFilter = "all" | "solo" | "duo" | "group" | "best-smile" | "favorites";
+type SmartFilter = "all" | "solo" | "group" | "best-smile" | "favorites";
 
 const filterStyles: Record<FilterType, string> = {
   none: "", grayscale: "grayscale(100%)", sepia: "sepia(100%)",
@@ -60,6 +62,7 @@ export default function Gallery() {
   const [selectedImages, setSelectedImages] = useState<Set<number>>(new Set());
   const [bulkMode, setBulkMode] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [activityScore, setActivityScore] = useState<number>(0);
   const { toast } = useToast();
 
   const parseQrCode = useCallback(() => {
@@ -109,47 +112,30 @@ export default function Gallery() {
     try {
       let person: { id: string; name: string } | null = null;
 
-      // Try RPC first
+      // Try RPC first, then direct fallback
       try {
-        const { data: rpcData } = await supabase.rpc("validate_person_access", {
-          p_event_id: evtId,
-          p_person_id: parseInt(perId),
-          p_access_token: tkn,
+        const { data } = await supabase.rpc("validate_person_access", {
+          p_event_id: evtId, p_person_id: parseInt(perId), p_access_token: tkn,
         });
-        if (rpcData && rpcData.length > 0) {
-          person = { id: rpcData[0].id, name: rpcData[0].name };
-        }
+        if (data && data.length > 0) person = { id: data[0].id, name: data[0].name };
       } catch {}
 
-      // Direct query fallback
       if (!person) {
-        const { data } = await supabase
-          .from("persons")
-          .select("id, name")
-          .eq("event_id", evtId)
-          .eq("person_id", parseInt(perId))
-          .eq("access_token", tkn)
-          .not("qr_code", "is", null)
-          .maybeSingle();
+        const { data } = await supabase.from("persons").select("id, name")
+          .eq("event_id", evtId).eq("person_id", parseInt(perId))
+          .eq("access_token", tkn).not("qr_code", "is", null).maybeSingle();
         if (data) person = { id: data.id, name: data.name };
       }
 
-      if (!person) {
-        setAccessDenied(true);
-        setLoading(false);
-        return;
-      }
+      if (!person) { setAccessDenied(true); setLoading(false); return; }
 
-      // Track scan
-      try {
-        await supabase.from("analytics_events").insert({
-          event_id: evtId, person_id: person.id,
-          event_type: "qr_scan",
-          metadata: { timestamp: new Date().toISOString() },
-        });
-      } catch {}
+      // Get event name and total photos
+      const { data: eventData } = await supabase.from("events").select("name").eq("id", evtId).single();
+      const { count: totalPhotos } = await supabase.from("person_images")
+        .select("id", { count: "exact", head: true })
+        .in("person_id", (await supabase.from("persons").select("id").eq("event_id", evtId)).data?.map(p => p.id) || []);
 
-      // Load images — direct query (most reliable)
+      // Get person images
       const { data: images } = await supabase
         .from("person_images")
         .select("id, image_url, face_count, moment_type, smile_score, captured_at, created_at")
@@ -159,24 +145,44 @@ export default function Gallery() {
       const photoList: ImageData[] = (images || [])
         .filter((img: any) => img.image_url)
         .map((img: any) => ({
-          id: img.id,
-          url: img.image_url,
+          id: img.id, url: img.image_url,
           face_count: img.face_count || 1,
           moment_type: img.moment_type || "candid",
           smile_score: img.smile_score || 0.5,
-          captured_at: img.captured_at || img.created_at || new Date().toISOString(),
+          captured_at: img.captured_at || img.created_at,
         }));
 
-      setPersonData({ id: person.id, name: person.name || "Unknown", eventId: evtId, images: photoList });
+      // Calculate activity score (% of total event photos this person appears in)
+      const score = totalPhotos && totalPhotos > 0
+        ? Math.round((photoList.length / totalPhotos) * 100)
+        : 0;
+      setActivityScore(score);
 
-      // Load favorites if logged in
+      setPersonData({
+        id: person.id,
+        name: person.name || "Unknown",
+        eventId: evtId,
+        eventName: eventData?.name || "Event",
+        images: photoList,
+        totalEventPhotos: totalPhotos || 0,
+      });
+
+      // Track scan
+      try {
+        await supabase.from("analytics_events").insert({
+          event_id: evtId, person_id: person.id,
+          event_type: "qr_scan", metadata: { timestamp: new Date().toISOString() },
+        });
+      } catch {}
+
+      // Load favorites
       if (user) {
         const { data: favData } = await supabase.from("favorites").select("image_url").eq("user_id", user.id);
         setFavorites(new Set((favData || []).map((f: any) => f.image_url)));
       }
 
     } catch (error: any) {
-      toast({ variant: "destructive", title: "Error loading photos", description: getSafeErrorMessage(error) });
+      toast({ variant: "destructive", title: "Error", description: getSafeErrorMessage(error) });
       setAccessDenied(true);
     } finally {
       setLoading(false);
@@ -184,10 +190,7 @@ export default function Gallery() {
   };
 
   const toggleFavorite = async (image: ImageData) => {
-    if (!user || !personData) {
-      toast({ title: "Sign in to save favorites" });
-      return;
-    }
+    if (!user || !personData) { toast({ title: "Sign in to save favorites" }); return; }
     const isFav = favorites.has(image.url);
     if (isFav) {
       await supabase.from("favorites").delete().eq("user_id", user.id).eq("image_url", image.url);
@@ -204,8 +207,7 @@ export default function Gallery() {
     if (!personData) return [];
     switch (smartFilter) {
       case "solo": return personData.images.filter(i => i.face_count === 1);
-      case "duo": return personData.images.filter(i => i.face_count === 2);
-      case "group": return personData.images.filter(i => i.face_count >= 3);
+      case "group": return personData.images.filter(i => i.face_count >= 2);
       case "best-smile": return [...personData.images].sort((a, b) => b.smile_score - a.smile_score).slice(0, 10);
       case "favorites": return personData.images.filter(i => favorites.has(i.url));
       default: return personData.images;
@@ -228,21 +230,31 @@ export default function Gallery() {
       a.href = URL.createObjectURL(blob);
       a.download = filename || `FaceTag-${Date.now()}.jpg`;
       a.click();
-      toast({ title: "Download started" });
-    } catch {
-      window.open(url, "_blank");
-    }
+      toast({ title: "Download started ✓" });
+    } catch { window.open(url, "_blank"); }
   };
 
   const handleShare = (url: string, platform?: string) => {
     const text = `Check out my photo from ${personData?.name}'s gallery on FaceTag!`;
-    if (platform === "facebook") window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, "_blank");
+    if (platform === "whatsapp") window.open(`https://wa.me/?text=${encodeURIComponent(text + " " + url)}`, "_blank");
+    else if (platform === "facebook") window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, "_blank");
     else if (platform === "twitter") window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`, "_blank");
-    else if (platform === "whatsapp") window.open(`https://wa.me/?text=${encodeURIComponent(text + " " + url)}`, "_blank");
-    else {
+    else if (platform === "instagram") {
+      navigator.clipboard.writeText(url);
+      toast({ title: "Link copied!", description: "Paste it in your Instagram story or post" });
+    } else {
       navigator.clipboard.writeText(url);
       toast({ title: "Link copied ✓" });
     }
+  };
+
+  const shareAllPhotos = (platform: string) => {
+    const galleryUrl = window.location.href;
+    const text = `🎉 Check out my photos from ${personData?.eventName} on FaceTag! I appear in ${personData?.images.length} photos!`;
+    if (platform === "whatsapp") window.open(`https://wa.me/?text=${encodeURIComponent(text + " " + galleryUrl)}`, "_blank");
+    else if (platform === "facebook") window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(galleryUrl)}`, "_blank");
+    else if (platform === "twitter") window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(galleryUrl)}`, "_blank");
+    else { navigator.clipboard.writeText(galleryUrl); toast({ title: "Gallery link copied ✓" }); }
   };
 
   const filteredImages = getFilteredImages();
@@ -277,28 +289,111 @@ export default function Gallery() {
     <div className="min-h-screen bg-background">
       <Navbar />
       <div className="container mx-auto px-4 py-8">
+
+        {/* Header */}
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-primary mb-2">{personData.name}'s Gallery</h1>
-          <p className="text-muted-foreground">{personData.images.length} photo{personData.images.length !== 1 ? "s" : ""} found</p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-bold mb-1">{personData.name}'s Gallery</h1>
+              <p className="text-muted-foreground text-sm">{personData.eventName}</p>
+            </div>
+            {/* Share Gallery Button */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Share2 className="h-4 w-4 mr-2" />Share My Gallery
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Share Your Gallery</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => shareAllPhotos("whatsapp")}>
+                  <MessageCircle className="h-4 w-4 mr-2 text-green-500" />WhatsApp
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => shareAllPhotos("facebook")}>
+                  <Facebook className="h-4 w-4 mr-2 text-blue-600" />Facebook
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => shareAllPhotos("twitter")}>
+                  <Twitter className="h-4 w-4 mr-2 text-sky-500" />Twitter / X
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => shareAllPhotos("copy")}>
+                  <Link2 className="h-4 w-4 mr-2" />Copy Link
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* User Activity Score */}
+          <div className="mt-4 p-4 rounded-2xl bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/20">
+            <div className="flex flex-wrap items-center gap-6">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
+                  <Camera className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-primary">{personData.images.length}</p>
+                  <p className="text-xs text-muted-foreground">Your photos</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
+                  <Users className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-primary">{personData.totalEventPhotos}</p>
+                  <p className="text-xs text-muted-foreground">Total event photos</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
+                  <Smile className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-primary">{activityScore}%</p>
+                  <p className="text-xs text-muted-foreground">You're in {activityScore}% of photos!</p>
+                </div>
+              </div>
+              {/* Activity bar */}
+              <div className="flex-1 min-w-[120px]">
+                <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                  <span>Your presence</span>
+                  <span>{activityScore}%</span>
+                </div>
+                <div className="w-full bg-primary/10 rounded-full h-2">
+                  <div
+                    className="bg-primary h-2 rounded-full transition-all duration-1000"
+                    style={{ width: `${activityScore}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Controls */}
         <div className="flex flex-wrap gap-2 mb-6">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm"><Filter className="h-4 w-4 mr-2" />Filter: {smartFilter}</Button>
+              <Button variant="outline" size="sm">
+                <Filter className="h-4 w-4 mr-2" />Filter: {smartFilter}
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuLabel>Smart Filters</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {(["all", "solo", "duo", "group", "best-smile", "favorites"] as SmartFilter[]).map(f => (
+              {(["all", "solo", "group", "best-smile", "favorites"] as SmartFilter[]).map(f => (
                 <DropdownMenuItem key={f} onClick={() => setSmartFilter(f)}>
                   {f === "all" && <Grid className="h-4 w-4 mr-2" />}
                   {f === "solo" && <User className="h-4 w-4 mr-2" />}
-                  {(f === "duo" || f === "group") && <Users className="h-4 w-4 mr-2" />}
+                  {f === "group" && <Users className="h-4 w-4 mr-2" />}
                   {f === "best-smile" && <Smile className="h-4 w-4 mr-2" />}
                   {f === "favorites" && <Heart className="h-4 w-4 mr-2" />}
-                  {f.charAt(0).toUpperCase() + f.slice(1).replace("-", " ")}
+                  {f === "all" ? `All (${personData.images.length})` :
+                   f === "solo" ? `Solo (${personData.images.filter(i => i.face_count === 1).length})` :
+                   f === "group" ? `Group (${personData.images.filter(i => i.face_count >= 2).length})` :
+                   f === "best-smile" ? "Best Smiles" :
+                   `Favorites (${favorites.size})`}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -309,11 +404,9 @@ export default function Gallery() {
           </Button>
 
           {bulkMode && selectedImages.size > 0 && (
-            <Button size="sm" onClick={() => {
-              Array.from(selectedImages).forEach((idx, i) =>
-                setTimeout(() => handleDownload(filteredImages[idx].url, `photo-${idx + 1}.jpg`), i * 500)
-              );
-            }}>
+            <Button size="sm" onClick={() => Array.from(selectedImages).forEach((idx, i) =>
+              setTimeout(() => handleDownload(filteredImages[idx].url, `photo-${idx + 1}.jpg`), i * 500)
+            )}>
               <Download className="h-4 w-4 mr-2" />Download ({selectedImages.size})
             </Button>
           )}
@@ -325,7 +418,9 @@ export default function Gallery() {
             </>
           )}
 
-          <Button variant="outline" size="sm" onClick={() => filteredImages.forEach((img, i) => setTimeout(() => handleDownload(img.url, `FaceTag-${personData.name}-${i + 1}.jpg`), i * 600))}>
+          <Button variant="outline" size="sm" onClick={() =>
+            filteredImages.forEach((img, i) => setTimeout(() => handleDownload(img.url, `${personData.name}-${i + 1}.jpg`), i * 600))
+          }>
             <Download className="h-4 w-4 mr-2" />Download All
           </Button>
         </div>
@@ -353,27 +448,43 @@ export default function Gallery() {
                   }
                 }}
               >
-                <img src={image.url} alt={`Photo ${index + 1}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                <img src={image.url} alt={`Photo ${index + 1}`}
+                  className="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy" />
+
+                {/* Hover overlay */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
                   <div className="absolute bottom-2 left-2 right-2 flex justify-between items-end">
-                    <Badge variant="secondary" className="text-xs">
-                      {image.face_count === 1 ? "Solo" : image.face_count === 2 ? "Duo" : `${image.face_count} faces`}
+                    <Badge variant="secondary" className="text-xs bg-black/50 text-white border-0">
+                      {image.face_count === 1 ? "Solo" : `${image.face_count} people`}
                     </Badge>
                     <div className="flex gap-1">
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-white hover:bg-white/20"
-                        onClick={e => { e.stopPropagation(); toggleFavorite(image); }}>
-                        <Heart className={cn("h-4 w-4", favorites.has(image.url) && "fill-red-500 text-red-500")} />
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-white hover:bg-white/20"
-                        onClick={e => { e.stopPropagation(); handleDownload(image.url); }}>
-                        <Download className="h-4 w-4" />
-                      </Button>
+                      <button
+                        className="p-1.5 bg-white/20 backdrop-blur rounded-full hover:bg-white/40 transition-colors"
+                        onClick={e => { e.stopPropagation(); toggleFavorite(image); }}
+                      >
+                        <Heart className={cn("h-3.5 w-3.5 text-white", favorites.has(image.url) && "fill-red-400 text-red-400")} />
+                      </button>
+                      <button
+                        className="p-1.5 bg-white/20 backdrop-blur rounded-full hover:bg-white/40 transition-colors"
+                        onClick={e => { e.stopPropagation(); handleDownload(image.url); }}
+                      >
+                        <Download className="h-3.5 w-3.5 text-white" />
+                      </button>
+                      {/* WhatsApp share on each photo */}
+                      <button
+                        className="p-1.5 bg-green-500/80 backdrop-blur rounded-full hover:bg-green-500 transition-colors"
+                        onClick={e => { e.stopPropagation(); handleShare(image.url, "whatsapp"); }}
+                        title="Share on WhatsApp"
+                      >
+                        <MessageCircle className="h-3.5 w-3.5 text-white" />
+                      </button>
                     </div>
                   </div>
                 </div>
+
                 {bulkMode && selectedImages.has(index) && (
                   <div className="absolute top-2 right-2 h-6 w-6 bg-primary rounded-full flex items-center justify-center">
-                    <Check className="h-4 w-4 text-primary-foreground" />
+                    <Check className="h-4 w-4 text-white" />
                   </div>
                 )}
               </div>
@@ -388,57 +499,73 @@ export default function Gallery() {
           {selectedImage && (
             <div className="relative w-full h-[90vh] flex items-center justify-center">
               <img src={selectedImage.url} alt="Full size"
-                className="max-w-full max-h-full object-contain transition-transform"
+                className="max-w-full max-h-full object-contain"
                 style={{ transform: `scale(${zoom})`, filter: filterStyles[filter] }} />
 
               {/* Top controls */}
               <div className="absolute top-4 right-4 flex gap-2">
-                <Button size="icon" variant="ghost" className="text-white hover:bg-white/20" onClick={() => toggleFavorite(selectedImage)}>
-                  <Heart className={cn("h-5 w-5", favorites.has(selectedImage.url) && "fill-red-500 text-red-500")} />
-                </Button>
-                <Button size="icon" variant="ghost" className="text-white hover:bg-white/20" onClick={() => handleDownload(selectedImage.url)}>
-                  <Download className="h-5 w-5" />
-                </Button>
+                <button className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => toggleFavorite(selectedImage)}>
+                  <Heart className={cn("h-5 w-5 text-white", favorites.has(selectedImage.url) && "fill-red-400 text-red-400")} />
+                </button>
+                <button className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => handleDownload(selectedImage.url)}>
+                  <Download className="h-5 w-5 text-white" />
+                </button>
+                {/* Share dropdown in lightbox */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button size="icon" variant="ghost" className="text-white hover:bg-white/20"><Share2 className="h-5 w-5" /></Button>
+                    <button className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors">
+                      <Share2 className="h-5 w-5 text-white" />
+                    </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "facebook")}><Facebook className="h-4 w-4 mr-2" />Facebook</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "twitter")}><Twitter className="h-4 w-4 mr-2" />Twitter</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "whatsapp")}><Share2 className="h-4 w-4 mr-2" />WhatsApp</DropdownMenuItem>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuLabel>Share Photo</DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url)}><Link2 className="h-4 w-4 mr-2" />Copy Link</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "whatsapp")}>
+                      <MessageCircle className="h-4 w-4 mr-2 text-green-500" />WhatsApp
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "facebook")}>
+                      <Facebook className="h-4 w-4 mr-2 text-blue-600" />Facebook
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "twitter")}>
+                      <Twitter className="h-4 w-4 mr-2 text-sky-500" />Twitter / X
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url, "instagram")}>
+                      <Camera className="h-4 w-4 mr-2 text-pink-500" />Instagram (copy link)
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => handleShare(selectedImage.url)}>
+                      <Link2 className="h-4 w-4 mr-2" />Copy Link
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
 
               {/* Navigation */}
-              <Button size="icon" variant="ghost" className="absolute left-4 top-1/2 -translate-y-1/2 text-white hover:bg-white/20" onClick={() => navigateImage(-1)}>
-                <ChevronLeft className="h-8 w-8" />
-              </Button>
-              <Button size="icon" variant="ghost" className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:bg-white/20" onClick={() => navigateImage(1)}>
-                <ChevronRight className="h-8 w-8" />
-              </Button>
+              <button className="absolute left-4 top-1/2 -translate-y-1/2 p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => navigateImage(-1)}>
+                <ChevronLeft className="h-8 w-8 text-white" />
+              </button>
+              <button className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => navigateImage(1)}>
+                <ChevronRight className="h-8 w-8 text-white" />
+              </button>
 
               {/* Bottom controls */}
               <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3">
-                <Button size="icon" variant="ghost" className="text-white hover:bg-white/20" onClick={() => setSlideshowActive(!slideshowActive)}>
-                  {slideshowActive ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-                </Button>
+                <button className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => setSlideshowActive(!slideshowActive)}>
+                  {slideshowActive ? <Pause className="h-5 w-5 text-white" /> : <Play className="h-5 w-5 text-white" />}
+                </button>
               </div>
 
               <div className="absolute bottom-4 right-4 flex items-center gap-2">
-                <Button size="icon" variant="ghost" className="text-white hover:bg-white/20" onClick={() => setZoom(z => Math.max(z - 0.25, 0.5))}>
-                  <ZoomOut className="h-5 w-5" />
-                </Button>
-                <span className="text-white text-sm">{Math.round(zoom * 100)}%</span>
-                <Button size="icon" variant="ghost" className="text-white hover:bg-white/20" onClick={() => setZoom(z => Math.min(z + 0.25, 3))}>
-                  <ZoomIn className="h-5 w-5" />
-                </Button>
+                <button className="p-1.5 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => setZoom(z => Math.max(z - 0.25, 0.5))}>
+                  <ZoomOut className="h-4 w-4 text-white" />
+                </button>
+                <span className="text-white text-xs">{Math.round(zoom * 100)}%</span>
+                <button className="p-1.5 bg-white/10 hover:bg-white/20 rounded-full transition-colors" onClick={() => setZoom(z => Math.min(z + 0.25, 3))}>
+                  <ZoomIn className="h-4 w-4 text-white" />
+                </button>
               </div>
 
-              <p className="absolute top-4 left-4 text-white/70 text-sm">{selectedIndex + 1} / {filteredImages.length}</p>
+              <p className="absolute top-4 left-4 text-white/60 text-sm">{selectedIndex + 1} / {filteredImages.length}</p>
             </div>
           )}
         </DialogContent>
