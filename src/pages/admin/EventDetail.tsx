@@ -51,6 +51,7 @@ interface PersonData {
   qr_url: string | null;
   access_token: string | null;
   previewImage?: string | null;
+  previewBbox?: { x: number; y: number; w: number; h: number } | null;
   imageCount?: number;
 }
 
@@ -119,9 +120,16 @@ export default function EventDetail() {
         (data || []).map(async (person) => {
           const { data: images, count } = await supabase
             .from("person_images")
-            .select("image_url", { count: "exact" })
-            .eq("person_id", person.id);
-          return { ...person, previewImage: images?.[0]?.image_url || null, imageCount: count || 0 };
+            .select("image_url, bbox", { count: "exact" })
+            .eq("person_id", person.id)
+            .limit(1);
+          const firstImage = images?.[0];
+          return {
+            ...person,
+            previewImage: firstImage?.image_url || null,
+            previewBbox: firstImage?.bbox ? (firstImage.bbox as { x: number; y: number; w: number; h: number }) : null,
+            imageCount: count || 0,
+          };
         })
       );
 
@@ -741,7 +749,7 @@ export default function EventDetail() {
                             {groupPersons.map(p => (
                               <div key={p.id} className="w-10 h-10 rounded-full border-2 border-background overflow-hidden bg-muted">
                                 {p.previewImage ? (
-                                  <img src={p.previewImage} alt={p.name || ''} className="w-full h-full object-cover" />
+                                  <img src={p.previewImage} alt={p.name || ''} className="w-full h-full" style={getFaceCropStyle(p.previewBbox)} />
                                 ) : (
                                   <div className="flex items-center justify-center h-full"><Users className="h-4 w-4 text-muted-foreground" /></div>
                                 )}
@@ -806,6 +814,29 @@ export default function EventDetail() {
 }
 
 // ── PersonPhotosModal ──
+// Helper: compute CSS object-position from bbox to zoom into face
+function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
+  if (!bbox || (bbox.x === 0 && bbox.y === 0 && bbox.w === 100 && bbox.h === 100)) {
+    return { objectFit: "cover", objectPosition: "center top" };
+  }
+  // bbox values are percentages (0-100)
+  // Center the face in the frame with some padding
+  const padding = 20; // % padding around face
+  const cx = bbox.x + bbox.w / 2; // face center x
+  const cy = bbox.y + bbox.h / 2; // face center y
+  // Clamp to valid range
+  const px = Math.min(Math.max(cx, 10), 90);
+  const py = Math.min(Math.max(cy - 5, 5), 85); // slightly above center for natural look
+  // Scale: zoom in so face fills more of the circle
+  const scale = Math.min(100 / (bbox.w + padding * 2), 3);
+  return {
+    objectFit: "cover",
+    objectPosition: `${px}% ${py}%`,
+    transform: `scale(${scale})`,
+    transformOrigin: `${px}% ${py}%`,
+  };
+}
+
 function PersonPhotosModal({ person, open, onClose }: { person: PersonData; open: boolean; onClose: () => void }) {
   const [photos, setPhotos] = useState<{ id: string; image_url: string }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -950,7 +981,12 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
           }`}
       >
         {person.previewImage ? (
-          <img src={person.previewImage} alt={person.name || `Person ${person.person_id}`} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110" />
+          <img
+            src={person.previewImage}
+            alt={person.name || `Person ${person.person_id}`}
+            className="w-full h-full transition-transform duration-300"
+            style={getFaceCropStyle(person.previewBbox)}
+          />
         ) : (
           <div className="flex items-center justify-center h-full bg-muted"><Users className="h-10 w-10 text-muted-foreground" /></div>
         )}
