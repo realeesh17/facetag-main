@@ -116,7 +116,7 @@ export default function EventDetail() {
       const { data, error } = await supabase.from("persons").select("*").eq("event_id", eventId).order("person_id");
       if (error) throw error;
 
-      const personsWithImages = await Promise.all(
+      const personsWithImages: PersonData[] = await Promise.all(
         (data || []).map(async (person) => {
           const { data: images, count } = await supabase
             .from("person_images")
@@ -127,9 +127,9 @@ export default function EventDetail() {
           return {
             ...person,
             previewImage: firstImage?.image_url || null,
-            previewBbox: firstImage?.bbox as { x: number; y: number; w: number; h: number } | null,
+            previewBbox: (firstImage?.bbox as { x: number; y: number; w: number; h: number } | null) || null,
             imageCount: count || 0,
-          };
+          } as PersonData;
         })
       );
 
@@ -639,50 +639,91 @@ export default function EventDetail() {
                 <div className="space-y-4">
                   <div className="text-center py-8">
                     {clustering ? (
-                      <div className="space-y-6">
-                        {/* Animated clustering visualization */}
-                        <div className="relative w-40 h-40 mx-auto">
-                          {/* Orbiting dots using CSS animation */}
-                          {[0, 1, 2, 3, 4, 5].map((i) => (
-                            <div
-                              key={i}
-                              className="absolute w-3 h-3 rounded-full bg-primary"
+                      <div className="flex flex-col items-center gap-8 py-4">
+                        <style>{`
+                          @keyframes orbitA { 0%{transform:rotate(0deg) translateX(52px) rotate(0deg)} 100%{transform:rotate(360deg) translateX(52px) rotate(-360deg)} }
+                          @keyframes orbitB { 0%{transform:rotate(120deg) translateX(36px) rotate(-120deg)} 100%{transform:rotate(480deg) translateX(36px) rotate(-480deg)} }
+                          @keyframes orbitC { 0%{transform:rotate(240deg) translateX(20px) rotate(-240deg)} 100%{transform:rotate(600deg) translateX(20px) rotate(-600deg)} }
+                          @keyframes pulseRing { 0%,100%{transform:scale(1);opacity:0.3} 50%{transform:scale(1.15);opacity:0.6} }
+                          @keyframes scanLine { 0%{top:0%;opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{top:100%;opacity:0} }
+                          @keyframes faceAppear { 0%{opacity:0;transform:scale(0.5)} 100%{opacity:1;transform:scale(1)} }
+                          @keyframes dotFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+                        `}</style>
+
+                        {/* Lottie-style face clustering animation */}
+                        <div className="relative w-48 h-48">
+                          {/* Outer ring */}
+                          <div className="absolute inset-0 rounded-full border border-primary/10" style={{animation:"pulseRing 2s ease-in-out infinite"}} />
+                          <div className="absolute inset-2 rounded-full border border-primary/15" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.3s"}} />
+                          <div className="absolute inset-5 rounded-full border border-primary/20" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.6s"}} />
+
+                          {/* Orbiting face avatars — outer */}
+                          {["👤","👥","🙂","😊","👤","😄"].map((emoji, i) => (
+                            <div key={i} className="absolute w-8 h-8 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center text-sm"
                               style={{
-                                top: "50%",
-                                left: "50%",
-                                marginTop: "-6px",
-                                marginLeft: "-6px",
-                                animation: `orbitDot 2.4s linear infinite`,
-                                animationDelay: `${i * 0.4}s`,
-                                transformOrigin: "6px 6px",
-                                opacity: 0.4 + (i * 0.1),
-                              }}
-                            />
+                                top:"50%", left:"50%", marginTop:"-16px", marginLeft:"-16px",
+                                animation:`orbitA ${3+i*0.3}s linear infinite`,
+                                animationDelay:`${i * (3/6)}s`,
+                              }}>
+                              <span style={{fontSize:"12px"}}>{emoji}</span>
+                            </div>
                           ))}
-                          {/* Center pulsing icon */}
+
+                          {/* Middle orbit dots */}
+                          {[0,1,2].map(i => (
+                            <div key={i} className="absolute w-3 h-3 rounded-full bg-blue-400/60"
+                              style={{
+                                top:"50%", left:"50%", marginTop:"-6px", marginLeft:"-6px",
+                                animation:`orbitB 2s linear infinite`,
+                                animationDelay:`${i * (2/3)}s`,
+                              }} />
+                          ))}
+
+                          {/* Center */}
                           <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="w-20 h-20 rounded-full bg-primary/10 border-2 border-primary/30 flex items-center justify-center animate-pulse">
-                              <Users className="h-10 w-10 text-primary" />
+                            <div className="relative w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/10 border border-primary/30 flex items-center justify-center overflow-hidden shadow-lg shadow-primary/20">
+                              {/* Scan line */}
+                              <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent"
+                                style={{animation:"scanLine 2s linear infinite"}} />
+                              <Users className="h-8 w-8 text-primary" />
                             </div>
                           </div>
+
+                          {/* Floating mini dots */}
+                          {[...Array(4)].map((_,i) => (
+                            <div key={i} className="absolute w-1.5 h-1.5 rounded-full bg-primary/40"
+                              style={{
+                                top:`${20+i*20}%`, left:`${10+i*25}%`,
+                                animation:`dotFloat ${1.5+i*0.3}s ease-in-out infinite`,
+                                animationDelay:`${i*0.4}s`
+                              }} />
+                          ))}
                         </div>
-                        <style>{`
-                          @keyframes orbitDot {
-                            0%   { transform: rotate(0deg)   translateX(56px); }
-                            100% { transform: rotate(360deg) translateX(56px); }
-                          }
-                        `}</style>
-                        <div className="space-y-3">
-                          <p className="text-lg font-semibold text-foreground">Clustering in progress...</p>
-                          <p className="text-sm text-muted-foreground">AI is analyzing faces and grouping them</p>
-                          <div className="flex flex-col items-center gap-2 mt-2">
-                            {["Detecting faces in photos", "Matching similar faces", "Creating person groups"].map((step, i) => (
-                              <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: `${i * 0.5}s` }} />
-                                <span>{step}</span>
+
+                        {/* Status text */}
+                        <div className="text-center space-y-2">
+                          <p className="text-base font-bold text-foreground">AI Clustering in Progress</p>
+                          <p className="text-sm text-muted-foreground">Face++ is analyzing and grouping faces</p>
+                        </div>
+
+                        {/* Progress steps */}
+                        <div className="w-full max-w-xs space-y-2">
+                          {[
+                            { label: "Detecting faces", icon: "🔍" },
+                            { label: "Matching identities", icon: "🔗" },
+                            { label: "Building person groups", icon: "👥" },
+                          ].map((step, i) => (
+                            <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl bg-muted/40 border border-border/50">
+                              <span className="text-base" style={{animation:`dotFloat 1.5s ease-in-out infinite`,animationDelay:`${i*0.5}s`}}>{step.icon}</span>
+                              <span className="text-xs text-muted-foreground">{step.label}</span>
+                              <div className="ml-auto flex gap-0.5">
+                                {[0,1,2].map(j => (
+                                  <div key={j} className="w-1 h-1 rounded-full bg-primary/60"
+                                    style={{animation:`dotFloat 0.8s ease-in-out infinite`,animationDelay:`${i*0.3+j*0.15}s`}} />
+                                ))}
                               </div>
-                            ))}
-                          </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ) : (
