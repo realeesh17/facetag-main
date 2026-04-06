@@ -1,11 +1,13 @@
 import { useAuth } from "@/hooks/useAuth";
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Camera, QrCode, Users, Sparkles, ArrowRight, Shield, Download, Share2, Zap, Star } from "lucide-react";
+import { Camera, QrCode, Users, Sparkles, ArrowRight, Shield, Download, Share2, Zap, Star, Sun, Moon } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
 
 export default function Landing() {
   const { user, profile, loading } = useAuth();
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
@@ -51,6 +53,13 @@ export default function Landing() {
           ))}
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={toggleTheme}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-all"
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           <Link to="/auth" className="text-sm text-white/50 hover:text-white px-3 py-2 transition-colors">Sign in</Link>
           <Link to="/auth" className="text-sm bg-blue-500 hover:bg-blue-400 text-white px-5 py-2 rounded-lg font-medium transition-all shadow-lg shadow-blue-500/20">Get started</Link>
         </div>
