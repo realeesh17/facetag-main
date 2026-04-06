@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Menu, User, LogOut, Camera, QrCode, Plus, BarChart3, Home, ArrowLeftRight } from "lucide-react";
+import { Menu, User, LogOut, Camera, QrCode, Plus, BarChart3, Home, ArrowLeftRight, Sun, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
+import { useTheme } from "@/hooks/useTheme";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import {
   Sheet,
@@ -23,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 
 export function Navbar() {
   const { user, profile, signOut, switchRole, isAdmin } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -70,6 +72,19 @@ export function Navbar() {
           )}
 
           <div className="flex items-center gap-2">
+            {/* Dark mode toggle */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              className="text-primary-foreground hover:bg-white/10 rounded-full h-9 w-9"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark"
+                ? <Sun className="h-5 w-5" />
+                : <Moon className="h-5 w-5" />
+              }
+            </Button>
             {user ? (
               <>
                 {/* User dropdown */}

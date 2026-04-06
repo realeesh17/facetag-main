@@ -123,16 +123,21 @@ serve(async (req) => {
       if (personError || !person) { console.error('Person error:', personError); continue; }
 
       const unique = [...new Map(analyses.map(a => [a.storagePath, a])).values()];
-      const records = unique.map((a, idx) => ({
-        person_id: person.id,
-        image_url: a.imageUrl,
-        storage_path: a.storagePath,
-        face_id: `${person.id}_${idx}`,
-        face_count: a.faceCount,
-        moment_type: a.momentType,
-        smile_score: a.avgSmileScore,
-        captured_at: new Date().toISOString(),
-      }));
+      const records = unique.map((a, idx) => {
+        // Pick the bbox of the person being saved (first face matching this personId)
+        const faceEntry = a.faces.find(f => f.personIndex === personId);
+        return {
+          person_id: person.id,
+          image_url: a.imageUrl,
+          storage_path: a.storagePath,
+          face_id: `${person.id}_${idx}`,
+          face_count: a.faceCount,
+          moment_type: a.momentType,
+          smile_score: a.avgSmileScore,
+          captured_at: new Date().toISOString(),
+          bbox: (faceEntry as any)?.boundingBox ?? null,
+        };
+      });
 
       const { error: imgError } = await supabase.from('person_images')
         .upsert(records, { onConflict: 'face_id', ignoreDuplicates: true });
@@ -184,7 +189,7 @@ async function clusterWithFacePP(
 
   // Step 2: Detect faces in each image
   const allFaceTokens: FaceToken[] = [];
-  const imageAnalyses: Map<string, { faceTokens: string[]; imageData: typeof images[0] }> = new Map();
+  const imageAnalyses: Map<string, { faceTokens: string[]; bboxMap: Map<string, any>; imageData: typeof images[0] }> = new Map();
 
   for (const image of images) {
     try {
@@ -201,7 +206,7 @@ async function clusterWithFacePP(
 
       if (!detectRes.ok) {
         console.error(`Detect failed for ${image.fileName}:`, await detectRes.text());
-        imageAnalyses.set(image.storagePath, { faceTokens: [], imageData: image });
+        imageAnalyses.set(image.storagePath, { faceTokens: [], bboxMap: new Map(), imageData: image });
         continue;
       }
 
@@ -216,12 +221,24 @@ async function clusterWithFacePP(
       });
 
       const faceTokens = mainFaces.map((f: any) => f.face_token);
-      imageAnalyses.set(image.storagePath, { faceTokens, imageData: image });
+      const bboxMap = new Map<string, any>();
+      const imgW = detectData.image_width || 1000;
+      const imgH = detectData.image_height || 1000;
+      for (const face of mainFaces) {
+        const r = face.face_rectangle;
+        bboxMap.set(face.face_token, {
+          x: Math.round((r.left / imgW) * 100),
+          y: Math.round((r.top / imgH) * 100),
+          w: Math.round((r.width / imgW) * 100),
+          h: Math.round((r.height / imgH) * 100),
+        });
+      }
+      imageAnalyses.set(image.storagePath, { faceTokens, bboxMap, imageData: image });
 
       for (const face of mainFaces) {
         allFaceTokens.push({
           token: face.face_token,
-          personIndex: -1, // Will be assigned later
+          personIndex: -1,
           imageUrl: image.url,
           storagePath: image.storagePath,
           rectangle: face.face_rectangle,
@@ -233,7 +250,7 @@ async function clusterWithFacePP(
 
     } catch (e) {
       console.error(`Error detecting faces in ${image.fileName}:`, e);
-      imageAnalyses.set(image.storagePath, { faceTokens: [], imageData: image });
+      imageAnalyses.set(image.storagePath, { faceTokens: [], bboxMap: new Map(), imageData: image });
     }
   }
 
@@ -339,13 +356,14 @@ async function clusterWithFacePP(
   for (const [storagePath, { faceTokens, imageData }] of imageAnalyses.entries()) {
     if (faceTokens.length === 0) continue;
 
+    const { bboxMap } = imageAnalyses.get(storagePath)!;
     const faces = faceTokens
       .map(token => {
         const personId = tokenToPersonMap.get(token);
         if (personId === undefined) return null;
-        return { personIndex: personId, confidence: 0.9, smileScore: 0.5 };
+        return { personIndex: personId, confidence: 0.9, smileScore: 0.5, boundingBox: bboxMap.get(token) || null };
       })
-      .filter(Boolean) as { personIndex: number; confidence: number; smileScore: number }[];
+      .filter(Boolean) as { personIndex: number; confidence: number; smileScore: number; boundingBox?: any }[];
 
     if (faces.length === 0) continue;
 

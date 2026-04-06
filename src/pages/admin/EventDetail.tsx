@@ -127,7 +127,7 @@ export default function EventDetail() {
           return {
             ...person,
             previewImage: firstImage?.image_url || null,
-            previewBbox: firstImage?.bbox ? (firstImage.bbox as { x: number; y: number; w: number; h: number }) : null,
+            previewBbox: firstImage?.bbox as { x: number; y: number; w: number; h: number } | null,
             imageCount: count || 0,
           };
         })
@@ -326,12 +326,23 @@ export default function EventDetail() {
       const body: any = { eventId };
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
       const { data, error } = await supabase.functions.invoke("cluster-faces", { body });
-      if (error) throw error;
+      if (error) {
+        // Extract meaningful error message
+        const errMsg = error.message || "Clustering failed";
+        const context = error.context;
+        let detail = errMsg;
+        if (context) {
+          try {
+            const ctx = typeof context === "string" ? JSON.parse(context) : context;
+            detail = ctx?.error || ctx?.message || errMsg;
+          } catch {}
+        }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
       toast({
-        title: "Clustering complete!",
-        description: data?.mergeStats
-          ? `${data.message}. AI merged ${data.mergeStats.beforeMerge - data.mergeStats.afterMerge} duplicate(s).`
-          : data?.message || "Faces have been grouped.",
+        title: "Clustering complete! 🎉",
+        description: data?.message || `Grouped photos into ${data?.persons || "several"} persons.`,
       });
       await supabase.from("events").update({ status: "ready" }).eq("id", eventId);
       fetchEvent();
@@ -339,7 +350,12 @@ export default function EventDetail() {
       setSimilarGroups([]);
       setActiveTab("persons");
     } catch (error: any) {
-      toast({ variant: "destructive", title: "Clustering failed", description: getSafeErrorMessage(error) });
+      console.error("Clustering error:", error);
+      toast({
+        variant: "destructive",
+        title: "Clustering failed",
+        description: error.message || "An error occurred. Check Supabase edge function logs.",
+      });
     } finally {
       setClustering(false);
     }
@@ -625,39 +641,49 @@ export default function EventDetail() {
                     {clustering ? (
                       <div className="space-y-6">
                         {/* Animated clustering visualization */}
-                        <div className="relative w-32 h-32 mx-auto">
-                          {/* Orbiting dots */}
+                        <div className="relative w-40 h-40 mx-auto">
+                          {/* Orbiting dots using CSS animation */}
                           {[0, 1, 2, 3, 4, 5].map((i) => (
                             <div
                               key={i}
-                              className="absolute w-4 h-4 rounded-full bg-primary"
+                              className="absolute w-3 h-3 rounded-full bg-primary"
                               style={{
-                                top: "50%", left: "50%",
-                                transform: `rotate(${i * 60}deg) translateX(48px) translateY(-50%)`,
-                                animation: `spin 2s linear infinite`,
-                                animationDelay: `${i * 0.33}s`,
-                                opacity: 0.3 + (i * 0.12),
+                                top: "50%",
+                                left: "50%",
+                                marginTop: "-6px",
+                                marginLeft: "-6px",
+                                animation: `orbitDot 2.4s linear infinite`,
+                                animationDelay: `${i * 0.4}s`,
+                                transformOrigin: "6px 6px",
+                                opacity: 0.4 + (i * 0.1),
                               }}
                             />
                           ))}
-                          {/* Center icon */}
+                          {/* Center pulsing icon */}
                           <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center animate-pulse">
-                              <Users className="h-8 w-8 text-primary" />
+                            <div className="w-20 h-20 rounded-full bg-primary/10 border-2 border-primary/30 flex items-center justify-center animate-pulse">
+                              <Users className="h-10 w-10 text-primary" />
                             </div>
                           </div>
                         </div>
-                        <div className="space-y-2">
+                        <style>{`
+                          @keyframes orbitDot {
+                            0%   { transform: rotate(0deg)   translateX(56px); }
+                            100% { transform: rotate(360deg) translateX(56px); }
+                          }
+                        `}</style>
+                        <div className="space-y-3">
                           <p className="text-lg font-semibold text-foreground">Clustering in progress...</p>
                           <p className="text-sm text-muted-foreground">AI is analyzing faces and grouping them</p>
-                          {/* Animated steps */}
-                          <div className="flex flex-col items-center gap-1 mt-4 text-xs text-muted-foreground">
-                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Detecting faces in photos</span></div>
-                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Matching similar faces</span></div>
-                            <div className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin text-primary" /><span>Creating person groups</span></div>
+                          <div className="flex flex-col items-center gap-2 mt-2">
+                            {["Detecting faces in photos", "Matching similar faces", "Creating person groups"].map((step, i) => (
+                              <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: `${i * 0.5}s` }} />
+                                <span>{step}</span>
+                              </div>
+                            ))}
                           </div>
                         </div>
-                        <style>{`@keyframes spin { from { transform: rotate(var(--start-angle, 0deg)) translateX(48px) translateY(-50%); } to { transform: rotate(calc(var(--start-angle, 0deg) + 360deg)) translateX(48px) translateY(-50%); } }`}</style>
                       </div>
                     ) : (
                       <>
@@ -816,24 +842,26 @@ export default function EventDetail() {
 // ── PersonPhotosModal ──
 // Helper: compute CSS object-position from bbox to zoom into face
 function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
-  if (!bbox || (bbox.x === 0 && bbox.y === 0 && bbox.w === 100 && bbox.h === 100)) {
-    return { objectFit: "cover", objectPosition: "center top" };
+  // No bbox or invalid pixel values (old data) → center-top crop
+  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100) {
+    return { objectFit: "cover" as const, objectPosition: "center 20%" };
   }
-  // bbox values are percentages (0-100)
-  // Center the face in the frame with some padding
-  const padding = 20; // % padding around face
-  const cx = bbox.x + bbox.w / 2; // face center x
-  const cy = bbox.y + bbox.h / 2; // face center y
-  // Clamp to valid range
-  const px = Math.min(Math.max(cx, 10), 90);
-  const py = Math.min(Math.max(cy - 5, 5), 85); // slightly above center for natural look
-  // Scale: zoom in so face fills more of the circle
-  const scale = Math.min(100 / (bbox.w + padding * 2), 3);
+  // bbox is in percentages (0-100) from Face++ converted in cluster-faces
+  // Face center point
+  const cx = bbox.x + bbox.w / 2;
+  const cy = bbox.y + bbox.h / 2;
+  // Zoom scale: make the face fill ~65% of the circle
+  // scale = 65 / face_width_pct (capped between 1.2 and 4)
+  const scale = Math.min(Math.max(65 / bbox.w, 1.2), 4);
+  // object-position moves the image so the face center is at the circle center
+  const px = Math.min(Math.max(cx, 5), 95);
+  const py = Math.min(Math.max(cy, 5), 90);
   return {
-    objectFit: "cover",
+    objectFit: "cover" as const,
     objectPosition: `${px}% ${py}%`,
-    transform: `scale(${scale})`,
+    transform: `scale(${scale.toFixed(2)})`,
     transformOrigin: `${px}% ${py}%`,
+    transition: "transform 0.3s ease",
   };
 }
 
