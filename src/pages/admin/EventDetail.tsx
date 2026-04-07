@@ -325,21 +325,29 @@ export default function EventDetail() {
     try {
       const body: any = { eventId };
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
-      const { data, error } = await supabase.functions.invoke("cluster-faces", { body });
-      if (error) {
-        // Extract meaningful error message
-        const errMsg = error.message || "Clustering failed";
-        const context = error.context;
-        let detail = errMsg;
-        if (context) {
-          try {
-            const ctx = typeof context === "string" ? JSON.parse(context) : context;
-            detail = ctx?.error || ctx?.message || errMsg;
-          } catch {}
-        }
-        throw new Error(detail);
+
+      // Use direct fetch instead of supabase.functions.invoke to avoid timeout
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/cluster-faces`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${supabaseKey}`,
+        },
+        body: JSON.stringify(body),
+        // No timeout — clustering can take a while with many photos
+      });
+
+      let data: any = {};
+      try { data = await response.json(); } catch {}
+
+      if (!response.ok) {
+        throw new Error(data?.error || `Server error ${response.status}`);
       }
       if (data?.error) throw new Error(data.error);
+
       toast({
         title: "Clustering complete! 🎉",
         description: data?.message || `Grouped photos into ${data?.persons || "several"} persons.`,
@@ -354,7 +362,7 @@ export default function EventDetail() {
       toast({
         variant: "destructive",
         title: "Clustering failed",
-        description: error.message || "An error occurred. Check Supabase edge function logs.",
+        description: error.message || "An error occurred. Please try again.",
       });
     } finally {
       setClustering(false);
@@ -883,26 +891,21 @@ export default function EventDetail() {
 // ── PersonPhotosModal ──
 // Helper: compute CSS object-position from bbox to zoom into face
 function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
-  // No bbox or invalid pixel values (old data) → center-top crop
-  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100) {
+  // No bbox, invalid, or pixel values (old data where w>100) → safe center-top crop
+  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100 || bbox.w < 2) {
     return { objectFit: "cover" as const, objectPosition: "center 20%" };
   }
-  // bbox is in percentages (0-100) from Face++ converted in cluster-faces
-  // Face center point
-  const cx = bbox.x + bbox.w / 2;
-  const cy = bbox.y + bbox.h / 2;
-  // Zoom scale: make the face fill ~65% of the circle
-  // scale = 65 / face_width_pct (capped between 1.2 and 4)
-  const scale = Math.min(Math.max(65 / bbox.w, 1.2), 4);
-  // object-position moves the image so the face center is at the circle center
-  const px = Math.min(Math.max(cx, 5), 95);
-  const py = Math.min(Math.max(cy, 5), 90);
+  // bbox is percentages (0-100) saved by cluster-faces
+  // Face center
+  const cx = Math.min(Math.max(bbox.x + bbox.w / 2, 10), 90);
+  const cy = Math.min(Math.max(bbox.y + bbox.h / 2 - 5, 5), 85); // slightly up for natural head room
+  // Zoom: make face fill ~60% of the circle. Cap scale between 1.5 and 3.5
+  const scale = Math.min(Math.max(60 / bbox.w, 1.5), 3.5);
   return {
     objectFit: "cover" as const,
-    objectPosition: `${px}% ${py}%`,
+    objectPosition: `${cx}% ${cy}%`,
     transform: `scale(${scale.toFixed(2)})`,
-    transformOrigin: `${px}% ${py}%`,
-    transition: "transform 0.3s ease",
+    transformOrigin: `${cx}% ${cy}%`,
   };
 }
 
