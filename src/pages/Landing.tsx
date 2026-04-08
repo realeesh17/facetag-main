@@ -37,8 +37,8 @@ export default function Landing() {
 
   return (
     <div className={`min-h-screen overflow-x-hidden ${theme === "dark" ? "bg-[#06060A] text-white" : "bg-[#f8faff] text-gray-900"}`}>
-      <div className="fixed inset-0 pointer-events-none z-0" style={{ background: `radial-gradient(500px at ${mouse.x}px ${mouse.y}px, rgba(59,130,246,0.05) 0%, transparent 70%)` }} />
-      <div className="fixed inset-0 pointer-events-none z-0 opacity-25" style={{ backgroundImage: theme === "dark" ? `radial-gradient(rgba(255,255,255,0.07) 1px, transparent 1px)` : `radial-gradient(rgba(0,0,0,0.06) 1px, transparent 1px)`, backgroundSize: "32px 32px" }} />
+      <div className="fixed inset-0 pointer-events-none z-0" style={{ background: theme === 'dark' ? `radial-gradient(500px at ${mouse.x}px ${mouse.y}px, rgba(59,130,246,0.06) 0%, transparent 70%)` : `radial-gradient(400px at ${mouse.x}px ${mouse.y}px, rgba(59,130,246,0.04) 0%, transparent 60%)` }} />
+      <div className="fixed inset-0 pointer-events-none z-0" style={{ backgroundImage: theme === "dark" ? `radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)` : `radial-gradient(rgba(0,0,0,0.05) 1px, transparent 1px)`, backgroundSize: "32px 32px", opacity: 0.4 }} />
 
       <nav className={`fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-8 py-4 border-b backdrop-blur-xl ${theme === "dark" ? "border-white/5 bg-[#06060A]/90" : "border-black/5 bg-white/90"}`}>
         <div className="flex items-center gap-2.5">
@@ -75,17 +75,17 @@ export default function Landing() {
             Face++ AI · 92% accuracy · Gemini-powered
           </div>
           <h1 className="text-[3.5rem] md:text-[5.5rem] font-black tracking-tight leading-none mb-6">
-            <span className="block text-white">Find yourself</span>
+            <span className={`block ${theme === "dark" ? "text-white" : "text-gray-900"}`}>Find yourself</span>
             <span className="block bg-gradient-to-r from-blue-400 to-blue-200 bg-clip-text text-transparent">in every photo</span>
           </h1>
           <p className={`text-lg max-w-xl mx-auto mb-10 leading-relaxed ${theme === "dark" ? "text-white/35" : "text-gray-500"}`}>
             Scan one QR code at any event. AI instantly shows every photo you're in. No scrolling, no searching.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center mb-16">
-            <Link to="/auth" className="group inline-flex items-center gap-2 bg-white text-black font-semibold px-7 py-3.5 rounded-xl hover:bg-blue-50 transition-all text-sm">
+            <Link to="/auth" className={`group inline-flex items-center gap-2 font-semibold px-7 py-3.5 rounded-xl transition-all text-sm border ${theme === "dark" ? "bg-white text-black hover:bg-blue-50 border-transparent" : "bg-blue-500 text-white hover:bg-blue-600 border-transparent"}`}>
               <QrCode className="h-4 w-4" />Find My Photos<ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
             </Link>
-            <Link to="/auth" className="inline-flex items-center gap-2 bg-white/5 hover:bg-white/8 border border-white/8 text-white/70 font-medium px-7 py-3.5 rounded-xl transition-all text-sm">
+            <Link to="/auth" className={`inline-flex items-center gap-2 font-medium px-7 py-3.5 rounded-xl transition-all text-sm border ${theme === "dark" ? "bg-white/5 hover:bg-white/8 border-white/8 text-white/70" : "bg-transparent text-gray-700 border-gray-300 hover:border-gray-400 hover:bg-gray-50"}`}>
               <Camera className="h-4 w-4" />I'm an Organizer
             </Link>
           </div>
@@ -105,15 +105,15 @@ export default function Landing() {
               <div className="w-2.5 h-2.5 rounded-full bg-red-500/50" />
               <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/50" />
               <div className="w-2.5 h-2.5 rounded-full bg-green-500/50" />
-              <div className="flex-1 mx-4 h-5 bg-white/5 rounded-md" />
+              <div className={`flex-1 mx-4 h-5 rounded-md ${theme === "dark" ? "bg-white/5" : "bg-gray-100"}`} />
             </div>
             <div className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-sm font-bold">R</div>
                   <div>
-                    <div className="text-sm font-semibold text-white">Rakesh's Gallery</div>
-                    <div className="text-xs text-white/30">Trophy Event · 12 photos</div>
+                    <div className={`text-sm font-semibold ${theme === "dark" ? "text-white" : "text-gray-900"}`}>Rakesh's Gallery</div>
+                    <div className={`text-xs ${theme === "dark" ? "text-white/30" : "text-gray-400"}`}>Trophy Event · 12 photos</div>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -121,15 +121,15 @@ export default function Landing() {
                 </div>
               </div>
               <div className="mb-4 p-3 rounded-xl bg-blue-500/5 border border-blue-500/10 flex items-center gap-6">
-                <div className="text-center"><div className="text-xl font-black text-blue-400">12</div><div className="text-xs text-white/25">your photos</div></div>
-                <div className="text-center"><div className="text-xl font-black text-blue-400">37%</div><div className="text-xs text-white/25">of event</div></div>
-                <div className="flex-1"><div className="h-1.5 bg-white/5 rounded-full"><div className="h-full w-[37%] bg-blue-500 rounded-full" /></div></div>
+                <div className="text-center"><div className="text-xl font-black text-blue-400">12</div><div className={`text-xs ${theme === "dark" ? "text-white/25" : "text-gray-400"}`}>your photos</div></div>
+                <div className="text-center"><div className="text-xl font-black text-blue-400">37%</div><div className={`text-xs ${theme === "dark" ? "text-white/25" : "text-gray-400"}`}>of event</div></div>
+                <div className="flex-1"><div className={`h-1.5 rounded-full ${theme === "dark" ? "bg-white/5" : "bg-gray-200"}`}><div className="h-full w-[37%] bg-blue-500 rounded-full" /></div></div>
               </div>
               <div className="grid grid-cols-4 gap-2">
                 {Array.from({length:8}).map((_,i) => (
                   <div key={i} className={`rounded-lg overflow-hidden flex items-center justify-center ${i===0?"col-span-2 row-span-2":""}`}
                     style={{aspectRatio:"1",background:`linear-gradient(135deg,hsl(${215+i*12},60%,${18+i*2}%),hsl(${230+i*8},50%,${12+i*3}%))`}}>
-                    <Users className="h-5 w-5 text-white/10" />
+                    <Users className={`h-5 w-5 ${theme === "dark" ? "text-white/10" : "text-white/20"}`} />
                   </div>
                 ))}
               </div>
@@ -151,7 +151,7 @@ export default function Landing() {
               {icon:Download,n:"03",title:"Instant Gallery",desc:"Guests scan their QR. Instantly see only their photos. Download HD or share to social."},
             ].map(item => (
               <div key={item.n} className={`relative rounded-2xl p-7 transition-all group border ${theme === "dark" ? "bg-white/2 border-white/6 hover:border-blue-500/20 hover:bg-white/3" : "bg-white border-gray-100 hover:border-blue-200 hover:shadow-md shadow-sm"}`}>
-                <div className="text-5xl font-black text-white/4 absolute top-5 right-6">{item.n}</div>
+                <div className={`text-5xl font-black absolute top-5 right-6 ${theme === "dark" ? "text-white/4" : "text-gray-200"}`}>{item.n}</div>
                 <div className="w-11 h-11 bg-blue-500/10 border border-blue-500/15 rounded-xl flex items-center justify-center mb-5">
                   <item.icon className="h-5 w-5 text-blue-400" />
                 </div>
@@ -184,7 +184,7 @@ export default function Landing() {
 
       <section className="py-28 px-4">
         <div className="max-w-2xl mx-auto text-center">
-          <div className="relative rounded-3xl border border-blue-500/15 bg-gradient-to-b from-blue-500/8 to-transparent p-12">
+          <div className={`relative rounded-3xl border p-12 ${theme === "dark" ? "border-blue-500/15 bg-gradient-to-b from-blue-500/8 to-transparent" : "border-blue-100 bg-gradient-to-b from-blue-50 to-white"}`}>
             <div className="w-14 h-14 bg-blue-500/15 border border-blue-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
               <Camera className="h-7 w-7 text-blue-400" />
             </div>
@@ -194,7 +194,7 @@ export default function Landing() {
               <Link to="/auth" className="inline-flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-400 text-white font-semibold px-7 py-3.5 rounded-xl transition-all text-sm shadow-lg shadow-blue-500/20">
                 <QrCode className="h-4 w-4" />Find My Photos
               </Link>
-              <Link to="/auth" className="inline-flex items-center justify-center gap-2 bg-white/5 hover:bg-white/8 border border-white/8 text-white/60 px-7 py-3.5 rounded-xl transition-all text-sm">
+              <Link to="/auth" className={`inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl transition-all text-sm border ${theme === "dark" ? "bg-white/5 hover:bg-white/8 border-white/8 text-white/60" : "bg-transparent border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
                 <Camera className="h-4 w-4" />Organize Event
               </Link>
             </div>

@@ -56,7 +56,6 @@ interface PersonData {
 }
 
 const BATCH_SIZE = 5;
-const MAX_PHOTOS = 100; // Support up to 100 photos per event
 
 export default function EventDetail() {
   const { eventId } = useParams();
@@ -158,6 +157,7 @@ export default function EventDetail() {
     setMerging(true);
     try {
       const selected = persons.filter(p => selectedForMerge.has(p.id));
+      // Keep the one with a name, or the one with most images, or the first
       const canonical = selected.reduce((best, p) => {
         if (p.name && !best.name) return p;
         if ((p.imageCount ?? 0) > (best.imageCount ?? 0)) return p;
@@ -167,17 +167,20 @@ export default function EventDetail() {
       const toMerge = selected.filter(p => p.id !== canonical.id);
 
       for (const person of toMerge) {
+        // Move all images to canonical person
         const { error: moveError } = await supabase
           .from("person_images")
           .update({ person_id: canonical.id })
           .eq("person_id", person.id);
         if (moveError) throw moveError;
 
+        // Move favorites
         await supabase
           .from("favorites")
           .update({ person_id: canonical.id })
           .eq("person_id", person.id);
 
+        // Delete the duplicate person
         const { error: deleteError } = await supabase
           .from("persons")
           .delete()
@@ -278,29 +281,8 @@ export default function EventDetail() {
 
   const processFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0 || !eventId) return;
-
-    const allFiles = Array.from(files);
-
-    // Cap at MAX_PHOTOS
-    if (allFiles.length > MAX_PHOTOS) {
-      toast({
-        variant: "destructive",
-        title: `Too many files selected`,
-        description: `Maximum ${MAX_PHOTOS} photos at once. You selected ${allFiles.length}. Please split into batches.`,
-      });
-      return;
-    }
-
-    // Warn for large batches
-    if (allFiles.length > 30) {
-      toast({
-        title: `Large batch detected (${allFiles.length} photos)`,
-        description: "Upload will proceed normally. Clustering may take a few minutes for large sets.",
-      });
-    }
-
     const validFiles: File[] = [];
-    for (const file of allFiles) {
+    for (const file of Array.from(files)) {
       const isHeic = file.type === "image/heic" || file.type === "image/heif" || file.name.toLowerCase().endsWith(".heic") || file.name.toLowerCase().endsWith(".heif");
       if (isHeic) { validFiles.push(file); } else {
         const validation = validateImageFile(file);
@@ -344,17 +326,18 @@ export default function EventDetail() {
       const body: any = { eventId };
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
 
+      // Use direct fetch instead of supabase.functions.invoke to avoid timeout
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Not logged in");
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
       const response = await fetch(`${supabaseUrl}/functions/v1/cluster-faces`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
+          "Authorization": `Bearer ${supabaseKey}`,
         },
         body: JSON.stringify(body),
+        // No timeout — clustering can take a while with many photos
       });
 
       let data: any = {};
@@ -572,16 +555,8 @@ export default function EventDetail() {
                       <span className="text-primary font-medium">Click to upload</span>
                       <span className="text-muted-foreground"> or drag and drop</span>
                     </Label>
-                    <Input
-                      id="file-upload"
-                      type="file"
-                      multiple
-                      accept="image/*,.heic,.heif"
-                      className="sr-only"
-                      onChange={handleUpload}
-                      disabled={uploading || preprocessing}
-                    />
-                    <p className="text-sm text-muted-foreground mt-2">PNG, JPG, WEBP, HEIC up to 50MB each • Max {MAX_PHOTOS} photos per batch (auto-optimized)</p>
+                    <Input id="file-upload" type="file" multiple accept="image/*,.heic,.heif" className="sr-only" onChange={handleUpload} disabled={uploading || preprocessing} />
+                    <p className="text-sm text-muted-foreground mt-2">PNG, JPG, WEBP, HEIC up to 50MB each (auto-optimized)</p>
                   </div>
 
                   {fileStates.length > 0 && (
@@ -630,9 +605,6 @@ export default function EventDetail() {
                         <div className="flex items-center gap-2">
                           <Grid3X3 className="h-4 w-4 text-muted-foreground" />
                           <span className="text-sm font-medium">{uploadedImageUrls.length} photo{uploadedImageUrls.length !== 1 ? 's' : ''} ready</span>
-                          {uploadedImageUrls.length > 30 && (
-                            <Badge variant="secondary" className="text-xs">Large batch — clustering may take a few minutes</Badge>
-                          )}
                         </div>
                         <Button variant="ghost" size="sm" onClick={() => setUploadedImageUrls([])} className="text-destructive hover:text-destructive">Clear all</Button>
                       </div>
@@ -651,13 +623,14 @@ export default function EventDetail() {
                         <Button
                           onClick={async () => {
                             setActiveTab("cluster");
+                            // Small delay to let tab switch animate, then auto-start clustering
                             setTimeout(() => handleCluster(), 300);
                           }}
                           className="w-full bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-600/90 text-white font-semibold"
                           size="lg"
                         >
                           <Sparkles className="mr-2 h-5 w-5" />
-                          Start Clustering {uploadedImageUrls.length > 30 ? `(${uploadedImageUrls.length} photos — may take a few mins)` : ''}
+                          Start Clustering
                         </Button>
                       )}
                     </div>
@@ -685,11 +658,14 @@ export default function EventDetail() {
                           @keyframes dotFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
                         `}</style>
 
+                        {/* Lottie-style face clustering animation */}
                         <div className="relative w-48 h-48">
+                          {/* Outer ring */}
                           <div className="absolute inset-0 rounded-full border border-primary/10" style={{animation:"pulseRing 2s ease-in-out infinite"}} />
                           <div className="absolute inset-2 rounded-full border border-primary/15" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.3s"}} />
                           <div className="absolute inset-5 rounded-full border border-primary/20" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.6s"}} />
 
+                          {/* Orbiting face avatars — outer */}
                           {["👤","👥","🙂","😊","👤","😄"].map((emoji, i) => (
                             <div key={i} className="absolute w-8 h-8 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center text-sm"
                               style={{
@@ -701,6 +677,7 @@ export default function EventDetail() {
                             </div>
                           ))}
 
+                          {/* Middle orbit dots */}
                           {[0,1,2].map(i => (
                             <div key={i} className="absolute w-3 h-3 rounded-full bg-blue-400/60"
                               style={{
@@ -710,14 +687,17 @@ export default function EventDetail() {
                               }} />
                           ))}
 
+                          {/* Center */}
                           <div className="absolute inset-0 flex items-center justify-center">
                             <div className="relative w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/10 border border-primary/30 flex items-center justify-center overflow-hidden shadow-lg shadow-primary/20">
+                              {/* Scan line */}
                               <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent"
                                 style={{animation:"scanLine 2s linear infinite"}} />
                               <Users className="h-8 w-8 text-primary" />
                             </div>
                           </div>
 
+                          {/* Floating mini dots */}
                           {[...Array(4)].map((_,i) => (
                             <div key={i} className="absolute w-1.5 h-1.5 rounded-full bg-primary/40"
                               style={{
@@ -728,14 +708,13 @@ export default function EventDetail() {
                           ))}
                         </div>
 
+                        {/* Status text */}
                         <div className="text-center space-y-2">
                           <p className="text-base font-bold text-foreground">AI Clustering in Progress</p>
-                          <p className="text-sm text-muted-foreground">
-                            Face++ is analyzing and grouping faces
-                            {uploadedImageUrls.length > 20 && ` across ${uploadedImageUrls.length} photos — this may take a few minutes`}
-                          </p>
+                          <p className="text-sm text-muted-foreground">Face++ is analyzing and grouping faces</p>
                         </div>
 
+                        {/* Progress steps */}
                         <div className="w-full max-w-xs space-y-2">
                           {[
                             { label: "Detecting faces", icon: "🔍" },
@@ -794,12 +773,24 @@ export default function EventDetail() {
                   <div className="flex items-center gap-2">
                     {mergeMode ? (
                       <>
-                        <span className="text-sm text-muted-foreground">{selectedForMerge.size} selected</span>
-                        <Button size="sm" onClick={handleMergePersons} disabled={selectedForMerge.size < 2 || merging}>
+                        <span className="text-sm text-muted-foreground">
+                          {selectedForMerge.size} selected
+                        </span>
+                        <Button
+                          size="sm"
+                          onClick={handleMergePersons}
+                          disabled={selectedForMerge.size < 2 || merging}
+                        >
                           {merging ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Merge className="mr-2 h-4 w-4" />}
                           Merge ({selectedForMerge.size})
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => { setMergeMode(false); setSelectedForMerge(new Set()); }}>Cancel</Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setMergeMode(false); setSelectedForMerge(new Set()); }}
+                        >
+                          Cancel
+                        </Button>
                       </>
                     ) : (
                       <>
@@ -818,6 +809,7 @@ export default function EventDetail() {
                   </div>
                 </div>
 
+                {/* AI Similarity Suggestions */}
                 {similarGroups.length > 0 && (
                   <div className="mb-4 space-y-2">
                     <p className="text-sm font-medium text-foreground flex items-center gap-2">
@@ -832,7 +824,7 @@ export default function EventDetail() {
                             {groupPersons.map(p => (
                               <div key={p.id} className="w-10 h-10 rounded-full border-2 border-background overflow-hidden bg-muted">
                                 {p.previewImage ? (
-                                  <img src={p.previewImage} alt={p.name || ''} className="w-full h-full" style={getFaceCropStyle(p.previewBbox)} />
+                                  <FaceCropImage src={p.previewImage} bbox={p.previewBbox} alt={p.name || ''} />
                                 ) : (
                                   <div className="flex items-center justify-center h-full"><Users className="h-4 w-4 text-muted-foreground" /></div>
                                 )}
@@ -896,14 +888,77 @@ export default function EventDetail() {
   );
 }
 
-// ── Helpers ──
-function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
-  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100 || bbox.w < 2) {
-    return { objectFit: "cover" as const, objectPosition: "center 20%" };
+// ── PersonPhotosModal ──
+// Helper: compute CSS object-position from bbox to zoom into face
+// Google Photos-style face crop using background-image (works correctly with overflow-hidden circles)
+function FaceCropImage({ 
+  src, 
+  bbox, 
+  alt, 
+  className = "" 
+}: { 
+  src: string; 
+  bbox?: { x: number; y: number; w: number; h: number } | null; 
+  alt: string; 
+  className?: string;
+}) {
+  const hasBbox = bbox && bbox.w > 0 && bbox.h > 0 && bbox.w <= 100 && bbox.h <= 100 && bbox.w >= 3;
+
+  if (!hasBbox) {
+    // No valid bbox → use top-center crop (faces usually in upper portion of photos)
+    return (
+      <div
+        className={`w-full h-full ${className}`}
+        style={{
+          backgroundImage: `url(${src})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center 15%",
+          backgroundRepeat: "no-repeat",
+        }}
+      />
+    );
   }
-  const cx = Math.min(Math.max(bbox.x + bbox.w / 2, 10), 90);
-  const cy = Math.min(Math.max(bbox.y + bbox.h / 2 - 5, 5), 85);
-  const scale = Math.min(Math.max(60 / bbox.w, 1.5), 3.5);
+
+  // Face center in percentages
+  const faceCx = bbox.x + bbox.w / 2;
+  const faceCy = bbox.y + bbox.h / 2;
+
+  // How much to zoom: we want the face to take up ~55% of the circle diameter
+  // backgroundSize controls zoom. 100% = fit width. We want to zoom so face fills 55%
+  // zoom factor = 100 / (bbox.w * targetRatio) where targetRatio = face fills 55% of circle
+  const zoom = Math.min(Math.max(55 / bbox.w, 1.5), 5);
+  const bgSize = `${zoom * 100}%`;
+
+  // background-position: move image so face center aligns to circle center
+  // When bgSize is e.g. 300%, the image is 3x wider than the element.
+  // To center the face at position faceCx%, we offset:
+  // bgPosX = faceCx - (50 / zoom)  (in original image %)
+  // Then convert to background-position %:
+  // bgPosX% in background-position space = (faceCx - 50/zoom) / (1 - 1/zoom) ... 
+  // Simpler: just use the face center as background-position directly — CSS handles the math
+  const bgPosX = `${Math.min(Math.max(faceCx, 5), 95)}%`;
+  const bgPosY = `${Math.min(Math.max(faceCy - 8, 3), 88)}%`; // slightly above center for head room
+
+  return (
+    <div
+      className={`w-full h-full ${className}`}
+      style={{
+        backgroundImage: `url(${src})`,
+        backgroundSize: bgSize,
+        backgroundPosition: `${bgPosX} ${bgPosY}`,
+        backgroundRepeat: "no-repeat",
+      }}
+    />
+  );
+}
+
+function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
+  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100 || bbox.w < 3) {
+    return { objectFit: "cover" as const, objectPosition: "center 15%" };
+  }
+  const cx = Math.min(Math.max(bbox.x + bbox.w / 2, 5), 95);
+  const cy = Math.min(Math.max(bbox.y + bbox.h / 2 - 8, 3), 88);
+  const scale = Math.min(Math.max(55 / bbox.w, 1.5), 5);
   return {
     objectFit: "cover" as const,
     objectPosition: `${cx}% ${cy}%`,
@@ -966,6 +1021,7 @@ function PersonPhotosModal({ person, open, onClose }: { person: PersonData; open
           </div>
         )}
 
+        {/* Lightbox inside modal */}
         {lightbox !== null && (
           <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center" onClick={() => setLightbox(null)}>
             <button className="absolute top-4 right-4 p-2 text-white/70 hover:text-white" onClick={() => setLightbox(null)}>
@@ -988,6 +1044,8 @@ function PersonPhotosModal({ person, open, onClose }: { person: PersonData; open
     </Dialog>
   );
 }
+
+// ── PersonCard ──
 
 interface PersonCardProps {
   person: PersonData;
@@ -1031,7 +1089,11 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
   };
 
   const handleClick = () => {
-    if (mergeMode) { onToggleMerge(); } else { setExpanded(!expanded); }
+    if (mergeMode) {
+      onToggleMerge();
+    } else {
+      setExpanded(!expanded);
+    }
   };
 
   return (
@@ -1049,11 +1111,10 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
           }`}
       >
         {person.previewImage ? (
-          <img
+          <FaceCropImage
             src={person.previewImage}
+            bbox={person.previewBbox}
             alt={person.name || `Person ${person.person_id}`}
-            className="w-full h-full transition-transform duration-300"
-            style={getFaceCropStyle(person.previewBbox)}
           />
         ) : (
           <div className="flex items-center justify-center h-full bg-muted"><Users className="h-10 w-10 text-muted-foreground" /></div>
@@ -1061,6 +1122,7 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
         {!mergeMode && (
           <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-full" />
         )}
+        {/* View Photos button on hover */}
         {!mergeMode && (person.imageCount ?? 0) > 0 && (
           <button
             className="absolute bottom-2 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200 bg-white/90 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center gap-1 hover:bg-white shadow-md whitespace-nowrap z-10"
@@ -1100,7 +1162,9 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
 
           {person.qr_code ? (
             <div className="space-y-2">
-              {person.qr_url && <img src={person.qr_url} alt="QR Code" className="w-full rounded-lg" />}
+              {person.qr_url && (
+                <img src={person.qr_url} alt="QR Code" className="w-full rounded-lg" />
+              )}
               <div className="space-y-1.5">
                 <Button size="sm" variant="outline" onClick={handleCopyCode} className="w-full h-7 text-xs">
                   {copied ? <Check className="mr-1 h-3 w-3" /> : <Copy className="mr-1 h-3 w-3" />}
@@ -1118,7 +1182,8 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
           )}
 
           <Button
-            variant="ghost" size="sm"
+            variant="ghost"
+            size="sm"
             className="w-full h-7 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
             onClick={() => onDeletePerson(person.id, person.name || `Person ${person.person_id}`)}
           >
@@ -1127,6 +1192,7 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
         </div>
       )}
 
+      {/* Photos Modal */}
       <PersonPhotosModal person={person} open={showPhotos} onClose={() => setShowPhotos(false)} />
     </div>
   );
