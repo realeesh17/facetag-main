@@ -327,18 +327,18 @@ export default function EventDetail() {
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
 
       // Use direct fetch instead of supabase.functions.invoke to avoid timeout
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-      const response = await fetch(`${supabaseUrl}/functions/v1/cluster-faces`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${supabaseKey}`,
-        },
-        body: JSON.stringify(body),
-        // No timeout — clustering can take a while with many photos
-      });
+      // ✅ NEW — replace with this
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const { data: { session } } = await supabase.auth.getSession();
+if (!session) throw new Error("Not logged in");
+const response = await fetch(`${supabaseUrl}/functions/v1/cluster-faces`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${session.access_token}`,
+  },
+  body: JSON.stringify(body),
+});
 
       let data: any = {};
       try { data = await response.json(); } catch {}
