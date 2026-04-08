@@ -890,65 +890,48 @@ export default function EventDetail() {
 
 // ── PersonPhotosModal ──
 // Helper: compute CSS object-position from bbox to zoom into face
-// Google Photos-style face crop using background-image (works correctly with overflow-hidden circles)
-function FaceCropImage({ 
-  src, 
-  bbox, 
-  alt, 
-  className = "" 
-}: { 
-  src: string; 
-  bbox?: { x: number; y: number; w: number; h: number } | null; 
-  alt: string; 
+// Google Photos-style face crop — correct CSS background-position math
+function FaceCropImage({
+  src, bbox, alt, className = ""
+}: {
+  src: string;
+  bbox?: { x: number; y: number; w: number; h: number } | null;
+  alt: string;
   className?: string;
 }) {
-  const hasBbox = bbox && bbox.w > 0 && bbox.h > 0 && bbox.w <= 100 && bbox.h <= 100 && bbox.w >= 3;
+  const hasBbox = bbox && bbox.w >= 3 && bbox.h >= 3 && bbox.w <= 80 && bbox.h <= 80;
 
   if (!hasBbox) {
-    // No valid bbox → use top-center crop (faces usually in upper portion of photos)
     return (
-      <div
-        className={`w-full h-full ${className}`}
-        style={{
-          backgroundImage: `url(${src})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center 15%",
-          backgroundRepeat: "no-repeat",
-        }}
-      />
+      <div className={`w-full h-full ${className}`} style={{
+        backgroundImage: `url(${src})`,
+        backgroundSize: "150%",
+        backgroundPosition: "center 10%",
+        backgroundRepeat: "no-repeat",
+      }} />
     );
   }
 
-  // Face center in percentages
-  const faceCx = bbox.x + bbox.w / 2;
-  const faceCy = bbox.y + bbox.h / 2;
+  // Face center as fraction (0-1)
+  const fcx = (bbox.x + bbox.w / 2) / 100;
+  const fcy = (bbox.y + bbox.h / 2) / 100;
 
-  // How much to zoom: we want the face to take up ~55% of the circle diameter
-  // backgroundSize controls zoom. 100% = fit width. We want to zoom so face fills 55%
-  // zoom factor = 100 / (bbox.w * targetRatio) where targetRatio = face fills 55% of circle
-  const zoom = Math.min(Math.max(55 / bbox.w, 1.5), 5);
-  const bgSize = `${zoom * 100}%`;
+  // Zoom so face fills ~65% of circle width. Clamp 2x–6x.
+  const zoom = Math.min(Math.max(65 / bbox.w, 2), 6);
 
-  // background-position: move image so face center aligns to circle center
-  // When bgSize is e.g. 300%, the image is 3x wider than the element.
-  // To center the face at position faceCx%, we offset:
-  // bgPosX = faceCx - (50 / zoom)  (in original image %)
-  // Then convert to background-position %:
-  // bgPosX% in background-position space = (faceCx - 50/zoom) / (1 - 1/zoom) ... 
-  // Simpler: just use the face center as background-position directly — CSS handles the math
-  const bgPosX = `${Math.min(Math.max(faceCx, 5), 95)}%`;
-  const bgPosY = `${Math.min(Math.max(faceCy - 8, 3), 88)}%`; // slightly above center for head room
+  // CSS background-position % correct formula:
+  // bgPos = (faceCenter - 0.5/zoom) / (1 - 1/zoom)
+  const bpx = zoom === 1 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / (1 - 1 / zoom), 0), 1);
+  const fcyAdj = Math.max(fcy - 0.05, 0.02); // slight headroom
+  const bpy = zoom === 1 ? 0.5 : Math.min(Math.max((fcyAdj - 0.5 / zoom) / (1 - 1 / zoom), 0), 1);
 
   return (
-    <div
-      className={`w-full h-full ${className}`}
-      style={{
-        backgroundImage: `url(${src})`,
-        backgroundSize: bgSize,
-        backgroundPosition: `${bgPosX} ${bgPosY}`,
-        backgroundRepeat: "no-repeat",
-      }}
-    />
+    <div className={`w-full h-full ${className}`} style={{
+      backgroundImage: `url(${src})`,
+      backgroundSize: `${zoom * 100}%`,
+      backgroundPosition: `${(bpx * 100).toFixed(1)}% ${(bpy * 100).toFixed(1)}%`,
+      backgroundRepeat: "no-repeat",
+    }} />
   );
 }
 
