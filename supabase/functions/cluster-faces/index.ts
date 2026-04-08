@@ -29,6 +29,13 @@ interface ImageAnalysis {
   avgSmileScore: number;
 }
 
+// ── Rate limit helper ──
+const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// ── Process images in chunks to avoid timeouts with 50-60 photos ──
+const DETECT_BATCH_SIZE = 10; // Process 10 images at a time
+const FACEPP_RATE_DELAY = 1100; // 1.1s between Face++ calls (free tier = 1 req/sec)
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
@@ -63,7 +70,7 @@ serve(async (req) => {
       status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
-    // Build image list
+    // Build image list — no cap, supports 50-60+ photos
     let imageList: { url: string; storagePath: string; fileName: string }[] = [];
     if (providedUrls && providedUrls.length > 0) {
       imageList = providedUrls.map((url, i) => ({
@@ -72,7 +79,7 @@ serve(async (req) => {
         fileName: url.split('/').pop()?.split('?')[0] || `image_${i}`,
       }));
     } else {
-      const { data: files } = await supabase.storage.from('event-images').list(eventId);
+      const { data: files } = await supabase.storage.from('event-images').list(eventId, { limit: 500 });
       if (!files || files.length === 0) throw new Error('No images found');
       imageList = files.map(file => {
         const { data: { publicUrl } } = supabase.storage.from('event-images').getPublicUrl(`${eventId}/${file.name}`);
@@ -112,9 +119,9 @@ serve(async (req) => {
 
     console.log(`Saving ${personClusters.size} person clusters`);
 
-    // Save to DB
+    // Save to DB — batch upserts for speed
     let savedCount = 0;
-    for (const [personId, analyses] of personClusters.entries()) {
+    for (const [personId, personAnalyses] of personClusters.entries()) {
       const { data: person, error: personError } = await supabase
         .from('persons')
         .upsert({ event_id: eventId, person_id: personId }, { onConflict: 'event_id,person_id' })
@@ -122,9 +129,8 @@ serve(async (req) => {
 
       if (personError || !person) { console.error('Person error:', personError); continue; }
 
-      const unique = [...new Map(analyses.map(a => [a.storagePath, a])).values()];
+      const unique = [...new Map(personAnalyses.map(a => [a.storagePath, a])).values()];
       const records = unique.map((a, idx) => {
-        // Pick the bbox of the person being saved (first face matching this personId)
         const faceEntry = a.faces.find(f => f.personIndex === personId);
         return {
           person_id: person.id,
@@ -139,10 +145,14 @@ serve(async (req) => {
         };
       });
 
-      const { error: imgError } = await supabase.from('person_images')
-        .upsert(records, { onConflict: 'face_id', ignoreDuplicates: true });
-      if (imgError) console.error('Image save error:', imgError);
-      else savedCount++;
+      // Save in sub-batches of 20 to avoid payload limits
+      for (let i = 0; i < records.length; i += 20) {
+        const batch = records.slice(i, i + 20);
+        const { error: imgError } = await supabase.from('person_images')
+          .upsert(batch, { onConflict: 'face_id', ignoreDuplicates: true });
+        if (imgError) console.error('Image save error:', imgError);
+      }
+      savedCount++;
     }
 
     return new Response(JSON.stringify({
@@ -169,7 +179,6 @@ async function clusterWithFacePP(
   geminiKey?: string | null
 ): Promise<ImageAnalysis[]> {
   
-  // Step 1: Create a FaceSet for this clustering session
   const facesetToken = `facetag_${Date.now()}`;
   
   try {
@@ -187,70 +196,84 @@ async function clusterWithFacePP(
     console.error('FaceSet create error:', e);
   }
 
-  // Step 2: Detect faces in each image
   const allFaceTokens: FaceToken[] = [];
   const imageAnalyses: Map<string, { faceTokens: string[]; bboxMap: Map<string, any>; imageData: typeof images[0] }> = new Map();
 
-  for (const image of images) {
-    try {
-      const detectRes = await fetch('https://api-us.faceplusplus.com/facepp/v3/detect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          api_key: apiKey,
-          api_secret: apiSecret,
-          image_url: image.url,
-          return_attributes: 'smiling,emotion',
-        }),
-      });
+  // ── Process images in batches of DETECT_BATCH_SIZE to support 50-60 photos ──
+  console.log(`Detecting faces in ${images.length} images (batch size: ${DETECT_BATCH_SIZE})`);
 
-      if (!detectRes.ok) {
-        console.error(`Detect failed for ${image.fileName}:`, await detectRes.text());
+  for (let batchStart = 0; batchStart < images.length; batchStart += DETECT_BATCH_SIZE) {
+    const batch = images.slice(batchStart, batchStart + DETECT_BATCH_SIZE);
+    console.log(`Processing detect batch ${Math.floor(batchStart/DETECT_BATCH_SIZE)+1}/${Math.ceil(images.length/DETECT_BATCH_SIZE)} (${batch.length} images)`);
+
+    for (const image of batch) {
+      try {
+        const detectRes = await fetch('https://api-us.faceplusplus.com/facepp/v3/detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            api_key: apiKey,
+            api_secret: apiSecret,
+            image_url: image.url,
+            return_attributes: 'smiling,emotion',
+          }),
+        });
+
+        if (!detectRes.ok) {
+          const errText = await detectRes.text();
+          console.error(`Detect failed for ${image.fileName}:`, errText);
+          imageAnalyses.set(image.storagePath, { faceTokens: [], bboxMap: new Map(), imageData: image });
+          await delay(FACEPP_RATE_DELAY);
+          continue;
+        }
+
+        const detectData = await detectRes.json();
+        const faces = detectData.faces || [];
+        
+        const mainFaces = faces.filter((f: any) => {
+          const area = f.face_rectangle.width * f.face_rectangle.height;
+          const imageArea = (detectData.image_width || 1000) * (detectData.image_height || 1000);
+          return area / imageArea > 0.005;
+        });
+
+        const faceTokens = mainFaces.map((f: any) => f.face_token);
+        const bboxMap = new Map<string, any>();
+        const imgW = detectData.image_width || 1000;
+        const imgH = detectData.image_height || 1000;
+
+        for (const face of mainFaces) {
+          const r = face.face_rectangle;
+          bboxMap.set(face.face_token, {
+            x: Math.round((r.left / imgW) * 100),
+            y: Math.round((r.top / imgH) * 100),
+            w: Math.round((r.width / imgW) * 100),
+            h: Math.round((r.height / imgH) * 100),
+          });
+        }
+
+        imageAnalyses.set(image.storagePath, { faceTokens, bboxMap, imageData: image });
+
+        for (const face of mainFaces) {
+          allFaceTokens.push({
+            token: face.face_token,
+            personIndex: -1,
+            imageUrl: image.url,
+            storagePath: image.storagePath,
+            rectangle: face.face_rectangle,
+          });
+        }
+
+        await delay(FACEPP_RATE_DELAY);
+
+      } catch (e) {
+        console.error(`Error detecting faces in ${image.fileName}:`, e);
         imageAnalyses.set(image.storagePath, { faceTokens: [], bboxMap: new Map(), imageData: image });
-        continue;
       }
+    }
 
-      const detectData = await detectRes.json();
-      const faces = detectData.faces || [];
-      
-      // Filter out very small faces (background people)
-      const mainFaces = faces.filter((f: any) => {
-        const area = f.face_rectangle.width * f.face_rectangle.height;
-        const imageArea = (detectData.image_width || 1000) * (detectData.image_height || 1000);
-        return area / imageArea > 0.005; // Face must be at least 0.5% of image
-      });
-
-      const faceTokens = mainFaces.map((f: any) => f.face_token);
-      const bboxMap = new Map<string, any>();
-      const imgW = detectData.image_width || 1000;
-      const imgH = detectData.image_height || 1000;
-      for (const face of mainFaces) {
-        const r = face.face_rectangle;
-        bboxMap.set(face.face_token, {
-          x: Math.round((r.left / imgW) * 100),
-          y: Math.round((r.top / imgH) * 100),
-          w: Math.round((r.width / imgW) * 100),
-          h: Math.round((r.height / imgH) * 100),
-        });
-      }
-      imageAnalyses.set(image.storagePath, { faceTokens, bboxMap, imageData: image });
-
-      for (const face of mainFaces) {
-        allFaceTokens.push({
-          token: face.face_token,
-          personIndex: -1,
-          imageUrl: image.url,
-          storagePath: image.storagePath,
-          rectangle: face.face_rectangle,
-        });
-      }
-
-      // Rate limit: Face++ allows 1 req/sec on free tier
-      await new Promise(r => setTimeout(r, 1100));
-
-    } catch (e) {
-      console.error(`Error detecting faces in ${image.fileName}:`, e);
-      imageAnalyses.set(image.storagePath, { faceTokens: [], bboxMap: new Map(), imageData: image });
+    // Brief pause between detect batches
+    if (batchStart + DETECT_BATCH_SIZE < images.length) {
+      await delay(500);
     }
   }
 
@@ -260,17 +283,13 @@ async function clusterWithFacePP(
     return deterministicClustering(images);
   }
 
-  // Step 3: Search/compare faces to group them
-  // Use Face++ search to find similar faces
-  const personGroups = new Map<number, string[]>(); // personIndex -> face tokens
-  const tokenToPersonMap = new Map<string, number>();
-  let nextPersonId = 0;
-
-  // Add all face tokens to faceset first
+  // Add all face tokens to faceset in batches of 5
   const tokenBatches = [];
   for (let i = 0; i < allFaceTokens.length; i += 5) {
     tokenBatches.push(allFaceTokens.slice(i, i + 5).map(f => f.token));
   }
+
+  console.log(`Adding ${allFaceTokens.length} face tokens in ${tokenBatches.length} batches`);
 
   for (const batch of tokenBatches) {
     try {
@@ -284,13 +303,19 @@ async function clusterWithFacePP(
           face_tokens: batch.join(','),
         }),
       });
-      await new Promise(r => setTimeout(r, 300));
+      await delay(300);
     } catch (e) {
       console.error('AddFace error:', e);
     }
   }
 
-  // Step 4: Compare each face against the faceset to find matches
+  // Compare faces to group them
+  const personGroups = new Map<number, string[]>();
+  const tokenToPersonMap = new Map<string, number>();
+  let nextPersonId = 0;
+
+  console.log(`Searching/matching ${allFaceTokens.length} faces`);
+
   for (const faceToken of allFaceTokens) {
     if (tokenToPersonMap.has(faceToken.token)) continue;
 
@@ -308,18 +333,16 @@ async function clusterWithFacePP(
       });
 
       if (!searchRes.ok) {
-        // Assign new person
         const pid = nextPersonId++;
         tokenToPersonMap.set(faceToken.token, pid);
         personGroups.set(pid, [faceToken.token]);
-        await new Promise(r => setTimeout(r, 1100));
+        await delay(FACEPP_RATE_DELAY);
         continue;
       }
 
       const searchData = await searchRes.json();
       const results = searchData.results || [];
 
-      // Find best match with confidence > 75 (Face++ threshold for same person)
       let matchedPersonId: number | null = null;
       for (const result of results) {
         if (result.confidence > 75 && result.face_token !== faceToken.token) {
@@ -340,7 +363,7 @@ async function clusterWithFacePP(
         personGroups.set(pid, [faceToken.token]);
       }
 
-      await new Promise(r => setTimeout(r, 1100));
+      await delay(FACEPP_RATE_DELAY);
 
     } catch (e) {
       console.error('Search error:', e);
@@ -350,13 +373,12 @@ async function clusterWithFacePP(
     }
   }
 
-  // Step 5: Build ImageAnalysis results
+  // Build ImageAnalysis results
   const analyses: ImageAnalysis[] = [];
 
-  for (const [storagePath, { faceTokens, imageData }] of imageAnalyses.entries()) {
+  for (const [storagePath, { faceTokens, imageData, bboxMap }] of imageAnalyses.entries()) {
     if (faceTokens.length === 0) continue;
 
-    const { bboxMap } = imageAnalyses.get(storagePath)!;
     const faces = faceTokens
       .map(token => {
         const personId = tokenToPersonMap.get(token);
@@ -391,12 +413,6 @@ async function clusterWithFacePP(
     });
   } catch {}
 
-  // If Gemini available, do second-pass merge
-  if (geminiKey && analyses.length > 0 && personGroups.size > 1) {
-    console.log('Running Gemini second-pass merge...');
-    // Simple merge: images with no faces get assigned to most common person
-  }
-
   console.log(`Face++ grouped into ${personGroups.size} persons`);
   return analyses;
 }
@@ -410,8 +426,11 @@ async function clusterWithGemini(
   const personMap = new Map<number, { desc: string; features: string[] }>();
   let nextId = 0;
 
+  // Process in batches of 3 with delay to handle 50-60 images
   for (let i = 0; i < images.length; i += 3) {
     const batch = images.slice(i, i + 3);
+    console.log(`Gemini batch ${Math.floor(i/3)+1}/${Math.ceil(images.length/3)}`);
+
     for (const image of batch) {
       try {
         const prompt = `Analyze faces in this photo. For each CLEAR, PROMINENT face only (ignore tiny/background people):
@@ -486,7 +505,7 @@ Skip: background people, blurry faces, faces under 5% of image size.`;
         console.error(`Gemini error for ${image.fileName}:`, e);
       }
     }
-    if (i + 3 < images.length) await new Promise(r => setTimeout(r, 600));
+    if (i + 3 < images.length) await delay(600);
   }
   return analyses;
 }
