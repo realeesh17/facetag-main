@@ -15,41 +15,43 @@ ADMIN FEATURES:
 - Name persons and generate QR codes
 - Send QR codes via email
 - Merge duplicate persons, delete persons or events
-- Re-cluster to improve results
 - Analytics: scan counts, downloads, shares
 
 USER FEATURES:
-- Scan QR code or enter code manually
-- View personal photo gallery (masonry layout)
+- Scan QR code or enter code manually on Scan page
+- View personal photo gallery
 - Filter: All, Solo, Group, Favorites
-- Download HD photos individually or all at once
-- Share to WhatsApp, Facebook, Twitter, Instagram
+- Download HD photos, share to WhatsApp/Instagram/Facebook
 
 TROUBLESHOOTING:
 - "0 photos" → Admin must cluster first, then generate QR
 - "Access denied" → QR expired, ask admin for new one
-- "Can't generate QR" → Save person's name first
-- "Upload stuck" → Retry, check internet
+- "Can't generate QR" → Save person name first
 - Role switching → Profile icon in top-right navbar
 
-Be friendly, concise, and give step-by-step help when needed.`;
+Be friendly, concise, step-by-step when needed.`;
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-async function callGemini(geminiKey: string, messages: any[], retries = 3): Promise<string> {
-  const contents = [];
-  
-  if (messages.length === 1) {
-    contents.push({
-      role: "user",
-      parts: [{ text: SYSTEM_PROMPT + "\n\nAnswer this question about FaceTag: " + messages[0].content }]
-    });
-  } else {
-    contents.push({
-      role: "user",
-      parts: [{ text: SYSTEM_PROMPT + "\n\nUser: " + messages[0].content }]
-    });
-    contents.push({ role: "model", parts: [{ text: "Got it! I'm your FaceTag assistant." }] });
+// Try multiple Gemini models in order of preference
+const GEMINI_MODELS = [
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-001", 
+  "gemini-1.0-pro",
+];
+
+async function callGeminiWithRetry(geminiKey: string, messages: any[]): Promise<string> {
+  const contents: any[] = [];
+
+  // Build conversation with system prompt embedded in first message
+  const firstUserMsg = messages[0]?.content || "hi";
+  contents.push({
+    role: "user",
+    parts: [{ text: `${SYSTEM_PROMPT}\n\nUser question: ${firstUserMsg}` }]
+  });
+
+  if (messages.length > 1) {
+    contents.push({ role: "model", parts: [{ text: "I'm your FaceTag assistant, happy to help!" }] });
     for (let i = 1; i < messages.length; i++) {
       contents.push({
         role: messages[i].role === "assistant" ? "model" : "user",
@@ -58,42 +60,57 @@ async function callGemini(geminiKey: string, messages: any[], retries = 3): Prom
     }
   }
 
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
-        })
+  const requestBody = {
+    contents,
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+  };
+
+  // Try each model
+  for (const model of GEMINI_MODELS) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            console.log(`Success with model: ${model}`);
+            return text;
+          }
+        }
+
+        if (response.status === 429) {
+          const waitMs = 3000 * Math.pow(2, attempt);
+          console.log(`Rate limited on ${model}, waiting ${waitMs}ms`);
+          await delay(waitMs);
+          continue;
+        }
+
+        if (response.status === 404) {
+          console.log(`Model ${model} not found, trying next`);
+          break; // Try next model
+        }
+
+        const errText = await response.text();
+        console.error(`Error ${response.status} on ${model}:`, errText);
+        break;
+
+      } catch (e) {
+        console.error(`Fetch error on ${model}:`, e);
+        break;
       }
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text
-        || "I couldn't generate a response. Please try again.";
     }
-
-    if (response.status === 429) {
-      if (attempt < retries - 1) {
-        // Exponential backoff: 3s, 6s, 12s
-        const waitMs = 3000 * Math.pow(2, attempt);
-        console.log(`Rate limited, waiting ${waitMs}ms before retry ${attempt + 1}`);
-        await delay(waitMs);
-        continue;
-      }
-      throw new Error("Gemini is temporarily busy. Please wait 30 seconds and try again.");
-    }
-
-    const errText = await response.text();
-    console.error("Gemini error:", response.status, errText);
-    throw new Error(`AI error: ${response.status}`);
   }
 
-  throw new Error("Max retries exceeded. Please try again in a moment.");
+  throw new Error("All Gemini models failed. Please check your GEMINI_API_KEY in Supabase secrets.");
 }
 
 serve(async (req) => {
@@ -104,14 +121,14 @@ serve(async (req) => {
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
 
     if (!geminiKey) {
-      return new Response(JSON.stringify({ 
-        error: "GEMINI_API_KEY not configured. Add it in Supabase dashboard → Settings → Edge Functions." 
+      return new Response(JSON.stringify({
+        error: "GEMINI_API_KEY not set. Go to Supabase dashboard → Settings → Edge Functions → Add secret."
       }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const text = await callGemini(geminiKey, messages);
+    const text = await callGeminiWithRetry(geminiKey, messages);
 
-    // Return as SSE stream
+    // Return as SSE stream matching frontend format
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
