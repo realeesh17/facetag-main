@@ -326,7 +326,6 @@ export default function EventDetail() {
       const body: any = { eventId };
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
 
-      // Use direct fetch instead of supabase.functions.invoke to avoid timeout
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
@@ -335,9 +334,9 @@ export default function EventDetail() {
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${supabaseKey}`,
+          "apikey": supabaseKey,
         },
         body: JSON.stringify(body),
-        // No timeout — clustering can take a while with many photos
       });
 
       let data: any = {};
