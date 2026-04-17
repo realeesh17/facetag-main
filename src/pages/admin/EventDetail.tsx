@@ -121,13 +121,30 @@ export default function EventDetail() {
           const { data: images, count } = await supabase
             .from("person_images")
             .select("image_url, bbox", { count: "exact" })
-            .eq("person_id", person.id)
-            .limit(1);
-          const firstImage = images?.[0];
+            .eq("person_id", person.id);
+          
+          // Pick the image with the best bbox (prefer solo shots with detected face)
+          let bestImage = images?.[0] || null;
+          let bestBbox: { x: number; y: number; w: number; h: number } | null = null;
+          
+          if (images && images.length > 0) {
+            for (const img of images) {
+              const b = img.bbox as { x: number; y: number; w: number; h: number } | null;
+              if (b && b.w >= 3 && b.h >= 3 && b.w <= 80) {
+                // Found valid bbox - use this image
+                bestImage = img;
+                bestBbox = b;
+                break;
+              }
+            }
+            // If no bbox found, just use first image
+            if (!bestBbox) bestImage = images[0];
+          }
+          
           return {
             ...person,
-            previewImage: firstImage?.image_url || null,
-            previewBbox: (firstImage?.bbox as { x: number; y: number; w: number; h: number } | null) || null,
+            previewImage: bestImage?.image_url || null,
+            previewBbox: bestBbox,
             imageCount: count || 0,
           } as PersonData;
         })
@@ -888,8 +905,8 @@ export default function EventDetail() {
 }
 
 // ── PersonPhotosModal ──
-// Helper: compute CSS object-position from bbox to zoom into face
-// Google Photos-style face crop — correct CSS background-position math
+// Google Photos-style face crop using CSS background-image
+// Works correctly inside overflow-hidden circles unlike transform: scale()
 function FaceCropImage({
   src, bbox, alt, className = ""
 }: {
@@ -898,39 +915,57 @@ function FaceCropImage({
   alt: string;
   className?: string;
 }) {
-  const hasBbox = bbox && bbox.w >= 3 && bbox.h >= 3 && bbox.w <= 80 && bbox.h <= 80;
+  const validBbox = bbox && 
+    typeof bbox.x === "number" && typeof bbox.y === "number" &&
+    typeof bbox.w === "number" && typeof bbox.h === "number" &&
+    bbox.w >= 3 && bbox.h >= 3 && bbox.w <= 85 && bbox.h <= 85;
 
-  if (!hasBbox) {
+  if (!validBbox) {
+    // No valid bbox → smart portrait crop: zoom in, focus upper portion
+    // This handles the case where Face++ bbox wasn't saved yet
     return (
-      <div className={`w-full h-full ${className}`} style={{
-        backgroundImage: `url(${src})`,
-        backgroundSize: "150%",
-        backgroundPosition: "center 10%",
-        backgroundRepeat: "no-repeat",
-      }} />
+      <div
+        className={`w-full h-full ${className}`}
+        style={{
+          backgroundImage: `url(${src})`,
+          backgroundSize: "200%",       // 2x zoom
+          backgroundPosition: "center 15%",  // upper-center (where face usually is)
+          backgroundRepeat: "no-repeat",
+        }}
+      />
     );
   }
 
-  // Face center as fraction (0-1)
+  // bbox values are percentages 0-100
+  // Face center as fraction 0-1
   const fcx = (bbox.x + bbox.w / 2) / 100;
   const fcy = (bbox.y + bbox.h / 2) / 100;
 
-  // Zoom so face fills ~65% of circle width. Clamp 2x–6x.
-  const zoom = Math.min(Math.max(65 / bbox.w, 2), 6);
+  // Zoom: face should fill ~55% of circle diameter (Google Photos style)
+  // zoom = targetFaceSize / actualFaceSize = 55 / bbox.w
+  const zoom = Math.min(Math.max(55 / bbox.w, 1.8), 7);
 
-  // CSS background-position % correct formula:
-  // bgPos = (faceCenter - 0.5/zoom) / (1 - 1/zoom)
-  const bpx = zoom === 1 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / (1 - 1 / zoom), 0), 1);
-  const fcyAdj = Math.max(fcy - 0.05, 0.02); // slight headroom
-  const bpy = zoom === 1 ? 0.5 : Math.min(Math.max((fcyAdj - 0.5 / zoom) / (1 - 1 / zoom), 0), 1);
+  // Correct CSS background-position formula:
+  // When bg is zoomed, position % maps differently than image %
+  // Formula: bgPos = (imgPos - 0.5/zoom) / (1 - 1/zoom)
+  const safeDivX = 1 - 1 / zoom;
+  const safeDivY = 1 - 1 / zoom;
+  const bpx = safeDivX < 0.01 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / safeDivX, 0), 1);
+  
+  // Slight vertical offset upward for natural headroom (like Google Photos)
+  const fcyWithHeadroom = Math.max(fcy - 0.06, 0.01);
+  const bpy = safeDivY < 0.01 ? 0.5 : Math.min(Math.max((fcyWithHeadroom - 0.5 / zoom) / safeDivY, 0), 1);
 
   return (
-    <div className={`w-full h-full ${className}`} style={{
-      backgroundImage: `url(${src})`,
-      backgroundSize: `${zoom * 100}%`,
-      backgroundPosition: `${(bpx * 100).toFixed(1)}% ${(bpy * 100).toFixed(1)}%`,
-      backgroundRepeat: "no-repeat",
-    }} />
+    <div
+      className={`w-full h-full ${className}`}
+      style={{
+        backgroundImage: `url(${src})`,
+        backgroundSize: `${(zoom * 100).toFixed(0)}%`,
+        backgroundPosition: `${(bpx * 100).toFixed(1)}% ${(bpy * 100).toFixed(1)}%`,
+        backgroundRepeat: "no-repeat",
+      }}
+    />
   );
 }
 

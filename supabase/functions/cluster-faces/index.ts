@@ -117,8 +117,13 @@ serve(async (req) => {
 
       const unique = [...new Map(analyses.map(a => [a.storagePath, a])).values()];
       const records = unique.map((a, idx) => {
-        // Pick the bbox of the person being saved (first face matching this personId)
         const faceEntry = a.faces.find(f => f.personIndex === personId);
+        const bbox = (faceEntry as any)?.boundingBox ?? null;
+        if (bbox) {
+          console.log(`Person ${personId} img ${idx}: bbox x=${bbox.x} y=${bbox.y} w=${bbox.w} h=${bbox.h}`);
+        } else {
+          console.warn(`Person ${personId} img ${idx}: NO bbox saved`);
+        }
         return {
           person_id: person.id,
           image_url: a.imageUrl,
@@ -128,7 +133,7 @@ serve(async (req) => {
           moment_type: a.momentType,
           smile_score: a.avgSmileScore,
           captured_at: new Date().toISOString(),
-          bbox: (faceEntry as any)?.boundingBox ?? null,
+          bbox: bbox,
         };
       });
 
