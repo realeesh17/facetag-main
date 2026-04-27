@@ -123,21 +123,32 @@ export default function EventDetail() {
             .select("image_url, bbox", { count: "exact" })
             .eq("person_id", person.id);
           
-          // Pick the image with the best bbox (prefer solo shots with detected face)
+          // Pick best image: prefer one with valid face bbox
           let bestImage = images?.[0] || null;
           let bestBbox: { x: number; y: number; w: number; h: number } | null = null;
-          
+
           if (images && images.length > 0) {
+            // Priority 1: image with bbox where face is in upper 70% (not body shot)
             for (const img of images) {
               const b = img.bbox as { x: number; y: number; w: number; h: number } | null;
-              if (b && b.w >= 3 && b.h >= 3 && b.w <= 80) {
-                // Found valid bbox - use this image
+              if (b && b.w >= 3 && b.w <= 70 && b.h >= 3 && b.y < 60) {
                 bestImage = img;
                 bestBbox = b;
                 break;
               }
             }
-            // If no bbox found, just use first image
+            // Priority 2: any image with any valid bbox
+            if (!bestBbox) {
+              for (const img of images) {
+                const b = img.bbox as { x: number; y: number; w: number; h: number } | null;
+                if (b && b.w >= 3 && b.w <= 85 && b.h >= 3) {
+                  bestImage = img;
+                  bestBbox = b;
+                  break;
+                }
+              }
+            }
+            // Priority 3: first image (no bbox - will use object-position fallback)
             if (!bestBbox) bestImage = images[0];
           }
           
@@ -404,7 +415,7 @@ export default function EventDetail() {
       if (error) throw error;
       toast({ title: "Person removed", description: `"${personName}" has been removed from this event.` });
       fetchPersons();
-    } catch (error: any) {
+    } catch (error: any) {̥̥
       toast({ variant: "destructive", title: "Delete failed", description: getSafeErrorMessage(error) });
     }
   };
@@ -663,87 +674,158 @@ export default function EventDetail() {
                 <div className="space-y-4">
                   <div className="text-center py-8">
                     {clustering ? (
-                      <div className="flex flex-col items-center gap-8 py-4">
+                      <div className="flex flex-col items-center gap-6 py-6 select-none">
                         <style>{`
-                          @keyframes orbitA { 0%{transform:rotate(0deg) translateX(52px) rotate(0deg)} 100%{transform:rotate(360deg) translateX(52px) rotate(-360deg)} }
-                          @keyframes orbitB { 0%{transform:rotate(120deg) translateX(36px) rotate(-120deg)} 100%{transform:rotate(480deg) translateX(36px) rotate(-480deg)} }
-                          @keyframes orbitC { 0%{transform:rotate(240deg) translateX(20px) rotate(-240deg)} 100%{transform:rotate(600deg) translateX(20px) rotate(-600deg)} }
-                          @keyframes pulseRing { 0%,100%{transform:scale(1);opacity:0.3} 50%{transform:scale(1.15);opacity:0.6} }
-                          @keyframes scanLine { 0%{top:0%;opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{top:100%;opacity:0} }
-                          @keyframes faceAppear { 0%{opacity:0;transform:scale(0.5)} 100%{opacity:1;transform:scale(1)} }
-                          @keyframes dotFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+                          @keyframes spin3d {
+                            0%   { transform: rotateY(0deg) rotateX(15deg); }
+                            100% { transform: rotateY(360deg) rotateX(15deg); }
+                          }
+                          @keyframes orbit3d-a {
+                            0%   { transform: rotateY(0deg)   translateX(68px) rotateY(0deg);   }
+                            100% { transform: rotateY(360deg) translateX(68px) rotateY(-360deg); }
+                          }
+                          @keyframes orbit3d-b {
+                            0%   { transform: rotateY(60deg)  translateX(52px) rotateY(-60deg);  }
+                            100% { transform: rotateY(420deg) translateX(52px) rotateY(-420deg); }
+                          }
+                          @keyframes orbit3d-c {
+                            0%   { transform: rotateY(120deg) translateX(36px) rotateY(-120deg); }
+                            100% { transform: rotateY(480deg) translateX(36px) rotateY(-480deg); }
+                          }
+                          @keyframes orbit3d-d {
+                            0%   { transform: rotateY(180deg) translateX(68px) rotateY(-180deg); }
+                            100% { transform: rotateY(540deg) translateX(68px) rotateY(-540deg); }
+                          }
+                          @keyframes orbit3d-e {
+                            0%   { transform: rotateY(240deg) translateX(52px) rotateY(-240deg); }
+                            100% { transform: rotateY(600deg) translateX(52px) rotateY(-600deg); }
+                          }
+                          @keyframes orbit3d-f {
+                            0%   { transform: rotateY(300deg) translateX(36px) rotateY(-300deg); }
+                            100% { transform: rotateY(660deg) translateX(36px) rotateY(-660deg); }
+                          }
+                          @keyframes glow3d {
+                            0%,100% { box-shadow: 0 0 20px rgba(59,130,246,0.4), 0 0 40px rgba(59,130,246,0.2), inset 0 1px 0 rgba(255,255,255,0.2); }
+                            50%     { box-shadow: 0 0 40px rgba(59,130,246,0.7), 0 0 80px rgba(59,130,246,0.3), inset 0 1px 0 rgba(255,255,255,0.3); }
+                          }
+                          @keyframes scanBeam {
+                            0%   { top: 0%;    opacity: 0; }
+                            5%   { opacity: 1; }
+                            95%  { opacity: 1; }
+                            100% { top: 100%;  opacity: 0; }
+                          }
+                          @keyframes particleDrift {
+                            0%   { transform: translateY(0)   translateX(0)   scale(1);   opacity: 0.8; }
+                            50%  { transform: translateY(-12px) translateX(6px) scale(1.2); opacity: 1;   }
+                            100% { transform: translateY(0)   translateX(0)   scale(1);   opacity: 0.8; }
+                          }
+                          @keyframes pulse3d {
+                            0%,100% { transform: scale(1);    opacity: 0.15; }
+                            50%     { transform: scale(1.08); opacity: 0.3;  }
+                          }
+                          @keyframes stepSlide {
+                            0%   { opacity: 0; transform: translateX(-8px); }
+                            100% { opacity: 1; transform: translateX(0); }
+                          }
                         `}</style>
 
-                        {/* Lottie-style face clustering animation */}
-                        <div className="relative w-48 h-48">
-                          {/* Outer ring */}
-                          <div className="absolute inset-0 rounded-full border border-primary/10" style={{animation:"pulseRing 2s ease-in-out infinite"}} />
-                          <div className="absolute inset-2 rounded-full border border-primary/15" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.3s"}} />
-                          <div className="absolute inset-5 rounded-full border border-primary/20" style={{animation:"pulseRing 2s ease-in-out infinite",animationDelay:"0.6s"}} />
+                        {/* 3D Face Clustering Sphere */}
+                        <div style={{ perspective: "600px", perspectiveOrigin: "50% 50%" }} className="relative w-52 h-52">
+                          <div style={{ transformStyle: "preserve-3d", animation: "spin3d 8s linear infinite", width: "100%", height: "100%", position: "relative" }}>
+                            
+                            {/* Outer glow rings */}
+                            <div className="absolute inset-0 rounded-full border border-blue-400/20" style={{ animation: "pulse3d 2s ease-in-out infinite" }} />
+                            <div className="absolute inset-3 rounded-full border border-blue-400/15" style={{ animation: "pulse3d 2s ease-in-out infinite", animationDelay: "0.4s" }} />
+                            <div className="absolute inset-6 rounded-full border border-blue-400/10" style={{ animation: "pulse3d 2s ease-in-out infinite", animationDelay: "0.8s" }} />
 
-                          {/* Orbiting face avatars — outer */}
-                          {["👤","👥","🙂","😊","👤","😄"].map((emoji, i) => (
-                            <div key={i} className="absolute w-8 h-8 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center text-sm"
-                              style={{
-                                top:"50%", left:"50%", marginTop:"-16px", marginLeft:"-16px",
-                                animation:`orbitA ${3+i*0.3}s linear infinite`,
-                                animationDelay:`${i * (3/6)}s`,
+                            {/* 6 orbiting face nodes at different 3D depths */}
+                            {[
+                              { anim: "orbit3d-a", dur: "3.2s", bg: "from-blue-500 to-blue-600", emoji: "😊", shadow: "shadow-blue-500/50" },
+                              { anim: "orbit3d-b", dur: "2.8s", bg: "from-violet-500 to-violet-600", emoji: "😄", shadow: "shadow-violet-500/50" },
+                              { anim: "orbit3d-c", dur: "3.6s", bg: "from-cyan-500 to-cyan-600", emoji: "🙂", shadow: "shadow-cyan-500/50" },
+                              { anim: "orbit3d-d", dur: "2.5s", bg: "from-blue-400 to-blue-500", emoji: "😁", shadow: "shadow-blue-400/50" },
+                              { anim: "orbit3d-e", dur: "3.9s", bg: "from-indigo-500 to-indigo-600", emoji: "😃", shadow: "shadow-indigo-500/50" },
+                              { anim: "orbit3d-f", dur: "2.2s", bg: "from-sky-500 to-sky-600", emoji: "🤩", shadow: "shadow-sky-500/50" },
+                            ].map((node, i) => (
+                              <div key={i} className="absolute" style={{
+                                top: "50%", left: "50%",
+                                marginTop: "-14px", marginLeft: "-14px",
+                                animation: `${node.anim} ${node.dur} linear infinite`,
+                                animationDelay: `${i * 0.3}s`,
                               }}>
-                              <span style={{fontSize:"12px"}}>{emoji}</span>
-                            </div>
-                          ))}
+                                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${node.bg} shadow-lg ${node.shadow} flex items-center justify-center text-xs border border-white/20`}
+                                  style={{ backdropFilter: "blur(4px)" }}>
+                                  <span>{node.emoji}</span>
+                                </div>
+                              </div>
+                            ))}
 
-                          {/* Middle orbit dots */}
-                          {[0,1,2].map(i => (
-                            <div key={i} className="absolute w-3 h-3 rounded-full bg-blue-400/60"
-                              style={{
-                                top:"50%", left:"50%", marginTop:"-6px", marginLeft:"-6px",
-                                animation:`orbitB 2s linear infinite`,
-                                animationDelay:`${i * (2/3)}s`,
-                              }} />
-                          ))}
-
-                          {/* Center */}
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="relative w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/10 border border-primary/30 flex items-center justify-center overflow-hidden shadow-lg shadow-primary/20">
-                              {/* Scan line */}
-                              <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent"
-                                style={{animation:"scanLine 2s linear infinite"}} />
-                              <Users className="h-8 w-8 text-primary" />
+                            {/* Center 3D core */}
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <div
+                                className="relative w-20 h-20 rounded-2xl flex items-center justify-center overflow-hidden border border-blue-400/30"
+                                style={{
+                                  background: "linear-gradient(135deg, rgba(59,130,246,0.25) 0%, rgba(139,92,246,0.15) 100%)",
+                                  animation: "glow3d 2s ease-in-out infinite",
+                                  backdropFilter: "blur(8px)",
+                                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.2)",
+                                }}
+                              >
+                                {/* Scan beam */}
+                                <div className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-blue-400 to-transparent"
+                                  style={{ animation: "scanBeam 2s linear infinite" }} />
+                                {/* Corner brackets */}
+                                <div className="absolute top-1.5 left-1.5 w-3 h-3 border-t-2 border-l-2 border-blue-400/70 rounded-tl" />
+                                <div className="absolute top-1.5 right-1.5 w-3 h-3 border-t-2 border-r-2 border-blue-400/70 rounded-tr" />
+                                <div className="absolute bottom-1.5 left-1.5 w-3 h-3 border-b-2 border-l-2 border-blue-400/70 rounded-bl" />
+                                <div className="absolute bottom-1.5 right-1.5 w-3 h-3 border-b-2 border-r-2 border-blue-400/70 rounded-br" />
+                                <Users className="h-8 w-8 text-blue-400 relative z-10" />
+                              </div>
                             </div>
+
+                            {/* Floating particles */}
+                            {[...Array(8)].map((_, i) => (
+                              <div key={i}
+                                className="absolute w-1 h-1 rounded-full bg-blue-400"
+                                style={{
+                                  top: `${15 + Math.sin(i * 0.8) * 35}%`,
+                                  left: `${15 + Math.cos(i * 0.8) * 35}%`,
+                                  animation: `particleDrift ${1.5 + i * 0.2}s ease-in-out infinite`,
+                                  animationDelay: `${i * 0.25}s`,
+                                  opacity: 0.6,
+                                }}
+                              />
+                            ))}
                           </div>
-
-                          {/* Floating mini dots */}
-                          {[...Array(4)].map((_,i) => (
-                            <div key={i} className="absolute w-1.5 h-1.5 rounded-full bg-primary/40"
-                              style={{
-                                top:`${20+i*20}%`, left:`${10+i*25}%`,
-                                animation:`dotFloat ${1.5+i*0.3}s ease-in-out infinite`,
-                                animationDelay:`${i*0.4}s`
-                              }} />
-                          ))}
                         </div>
 
-                        {/* Status text */}
-                        <div className="text-center space-y-2">
-                          <p className="text-base font-bold text-foreground">AI Clustering in Progress</p>
-                          <p className="text-sm text-muted-foreground">Face++ is analyzing and grouping faces</p>
+                        {/* Status */}
+                        <div className="text-center space-y-1">
+                          <p className="text-base font-bold text-foreground tracking-tight">AI Clustering in Progress</p>
+                          <p className="text-sm text-muted-foreground">Face++ is comparing and grouping faces</p>
                         </div>
 
-                        {/* Progress steps */}
-                        <div className="w-full max-w-xs space-y-2">
+                        {/* Animated step list */}
+                        <div className="w-full max-w-sm space-y-2">
                           {[
-                            { label: "Detecting faces", icon: "🔍" },
-                            { label: "Matching identities", icon: "🔗" },
-                            { label: "Building person groups", icon: "👥" },
+                            { icon: "🔍", label: "Detecting faces in each photo", delay: "0s" },
+                            { icon: "🔗", label: "Comparing face identities (Face++)", delay: "0.15s" },
+                            { icon: "🧠", label: "Building person clusters", delay: "0.3s" },
+                            { icon: "✅", label: "Saving results to database", delay: "0.45s" },
                           ].map((step, i) => (
-                            <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl bg-muted/40 border border-border/50">
-                              <span className="text-base" style={{animation:`dotFloat 1.5s ease-in-out infinite`,animationDelay:`${i*0.5}s`}}>{step.icon}</span>
-                              <span className="text-xs text-muted-foreground">{step.label}</span>
-                              <div className="ml-auto flex gap-0.5">
+                            <div key={i}
+                              className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm"
+                              style={{ animation: `stepSlide 0.4s ease-out ${step.delay} both` }}
+                            >
+                              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center text-sm shrink-0"
+                                style={{ animation: `particleDrift ${1.2 + i * 0.3}s ease-in-out infinite`, animationDelay: `${i * 0.4}s` }}>
+                                {step.icon}
+                              </div>
+                              <span className="text-xs text-muted-foreground flex-1">{step.label}</span>
+                              <div className="flex gap-0.5">
                                 {[0,1,2].map(j => (
                                   <div key={j} className="w-1 h-1 rounded-full bg-primary/60"
-                                    style={{animation:`dotFloat 0.8s ease-in-out infinite`,animationDelay:`${i*0.3+j*0.15}s`}} />
+                                    style={{ animation: `particleDrift 0.8s ease-in-out infinite`, animationDelay: `${i*0.2 + j*0.15}s` }} />
                                 ))}
                               </div>
                             </div>
@@ -751,6 +833,7 @@ export default function EventDetail() {
                         </div>
                       </div>
                     ) : (
+
                       <>
                         <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
                         <p className="text-muted-foreground mb-6">
@@ -915,53 +998,52 @@ function FaceCropImage({
   alt: string;
   className?: string;
 }) {
-  const validBbox = bbox && 
+  // Validate bbox — must be percentage values (3–85%)
+  const validBbox = bbox &&
     typeof bbox.x === "number" && typeof bbox.y === "number" &&
     typeof bbox.w === "number" && typeof bbox.h === "number" &&
     bbox.w >= 3 && bbox.h >= 3 && bbox.w <= 85 && bbox.h <= 85;
 
   if (!validBbox) {
-    // No valid bbox → smart portrait crop: zoom in, focus upper portion
-    // This handles the case where Face++ bbox wasn't saved yet
+    // No bbox: use img with object-fit cover + object-position top-center
+    // This reliably zooms into upper portion where faces typically are
     return (
-      <div
+      <img
+        src={src}
+        alt={alt}
         className={`w-full h-full ${className}`}
         style={{
-          backgroundImage: `url(${src})`,
-          backgroundSize: "200%",       // 2x zoom
-          backgroundPosition: "center 15%",  // upper-center (where face usually is)
-          backgroundRepeat: "no-repeat",
+          objectFit: "cover",
+          objectPosition: "center 20%",
         }}
       />
     );
   }
 
-  // bbox values are percentages 0-100
-  // Face center as fraction 0-1
+  // We have valid bbox — use it for precise face crop
+  // Face center as fraction (0–1)
   const fcx = (bbox.x + bbox.w / 2) / 100;
   const fcy = (bbox.y + bbox.h / 2) / 100;
 
-  // Zoom: face should fill ~55% of circle diameter (Google Photos style)
-  // zoom = targetFaceSize / actualFaceSize = 55 / bbox.w
-  const zoom = Math.min(Math.max(55 / bbox.w, 1.8), 7);
+  // How much to zoom: we want the face to fill 50% of the circle
+  // zoom = 50 / face_width_percent, clamped between 1.8x and 6x
+  const zoom = Math.min(Math.max(50 / bbox.w, 1.8), 6);
 
-  // Correct CSS background-position formula:
-  // When bg is zoomed, position % maps differently than image %
-  // Formula: bgPos = (imgPos - 0.5/zoom) / (1 - 1/zoom)
-  const safeDivX = 1 - 1 / zoom;
-  const safeDivY = 1 - 1 / zoom;
-  const bpx = safeDivX < 0.01 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / safeDivX, 0), 1);
-  
-  // Slight vertical offset upward for natural headroom (like Google Photos)
-  const fcyWithHeadroom = Math.max(fcy - 0.06, 0.01);
-  const bpy = safeDivY < 0.01 ? 0.5 : Math.min(Math.max((fcyWithHeadroom - 0.5 / zoom) / safeDivY, 0), 1);
+  // CSS background-position correct formula:
+  // bgPos% = (faceCenter - 0.5/zoom) / (1 - 1/zoom)
+  // This maps image coordinate to background-position space
+  const div = 1 - 1 / zoom;
+  const bpx = div < 0.001 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / div, 0), 1);
+  const bpy = div < 0.001 ? 0.3 : Math.min(Math.max(((fcy - 0.05) - 0.5 / zoom) / div, 0), 1);
 
+  // Use background-image approach — works correctly inside overflow-hidden circles
+  // (transform: scale on img does NOT respect overflow-hidden)
   return (
     <div
       className={`w-full h-full ${className}`}
       style={{
-        backgroundImage: `url(${src})`,
-        backgroundSize: `${(zoom * 100).toFixed(0)}%`,
+        backgroundImage: `url("${src}")`,
+        backgroundSize: `${Math.round(zoom * 100)}%`,
         backgroundPosition: `${(bpx * 100).toFixed(1)}% ${(bpy * 100).toFixed(1)}%`,
         backgroundRepeat: "no-repeat",
       }}
