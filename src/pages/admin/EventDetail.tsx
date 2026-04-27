@@ -10,7 +10,9 @@ import {
   Upload, Users, QrCode, Image as ImageIcon, X, Grid3X3,
   BarChart3, CheckCircle2, XCircle, Loader2, RefreshCw, AlertTriangle, ArrowRight, Copy, Check, Merge, Trash2, Sparkles, Eye, ChevronLeft, ChevronRight,
 } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -51,7 +53,6 @@ interface PersonData {
   qr_url: string | null;
   access_token: string | null;
   previewImage?: string | null;
-  previewBbox?: { x: number; y: number; w: number; h: number } | null;
   imageCount?: number;
 }
 
@@ -116,48 +117,13 @@ export default function EventDetail() {
       const { data, error } = await supabase.from("persons").select("*").eq("event_id", eventId).order("person_id");
       if (error) throw error;
 
-      const personsWithImages: PersonData[] = await Promise.all(
+      const personsWithImages = await Promise.all(
         (data || []).map(async (person) => {
           const { data: images, count } = await supabase
             .from("person_images")
-            .select("image_url, bbox", { count: "exact" })
+            .select("image_url", { count: "exact" })
             .eq("person_id", person.id);
-          
-          // Pick best image: prefer one with valid face bbox
-          let bestImage = images?.[0] || null;
-          let bestBbox: { x: number; y: number; w: number; h: number } | null = null;
-
-          if (images && images.length > 0) {
-            // Priority 1: image with bbox where face is in upper 70% (not body shot)
-            for (const img of images) {
-              const b = img.bbox as { x: number; y: number; w: number; h: number } | null;
-              if (b && b.w >= 3 && b.w <= 70 && b.h >= 3 && b.y < 60) {
-                bestImage = img;
-                bestBbox = b;
-                break;
-              }
-            }
-            // Priority 2: any image with any valid bbox
-            if (!bestBbox) {
-              for (const img of images) {
-                const b = img.bbox as { x: number; y: number; w: number; h: number } | null;
-                if (b && b.w >= 3 && b.w <= 85 && b.h >= 3) {
-                  bestImage = img;
-                  bestBbox = b;
-                  break;
-                }
-              }
-            }
-            // Priority 3: first image (no bbox - will use object-position fallback)
-            if (!bestBbox) bestImage = images[0];
-          }
-          
-          return {
-            ...person,
-            previewImage: bestImage?.image_url || null,
-            previewBbox: bestBbox,
-            imageCount: count || 0,
-          } as PersonData;
+          return { ...person, previewImage: images?.[0]?.image_url || null, imageCount: count || 0 };
         })
       );
 
@@ -353,31 +319,13 @@ export default function EventDetail() {
     try {
       const body: any = { eventId };
       if (uploadedImageUrls.length > 0) body.imageUrls = uploadedImageUrls;
-
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-      const response = await fetch(`${supabaseUrl}/functions/v1/cluster-faces`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${supabaseKey}`,
-          "apikey": supabaseKey,
-        },
-        body: JSON.stringify(body),
-      });
-
-      let data: any = {};
-      try { data = await response.json(); } catch {}
-
-      if (!response.ok) {
-        throw new Error(data?.error || `Server error ${response.status}`);
-      }
-      if (data?.error) throw new Error(data.error);
-
+      const { data, error } = await supabase.functions.invoke("cluster-faces", { body });
+      if (error) throw error;
       toast({
-        title: "Clustering complete! 🎉",
-        description: data?.message || `Grouped photos into ${data?.persons || "several"} persons.`,
+        title: "Clustering complete!",
+        description: data?.mergeStats
+          ? `${data.message}. AI merged ${data.mergeStats.beforeMerge - data.mergeStats.afterMerge} duplicate(s).`
+          : data?.message || "Faces have been grouped.",
       });
       await supabase.from("events").update({ status: "ready" }).eq("id", eventId);
       fetchEvent();
@@ -385,12 +333,7 @@ export default function EventDetail() {
       setSimilarGroups([]);
       setActiveTab("persons");
     } catch (error: any) {
-      console.error("Clustering error:", error);
-      toast({
-        variant: "destructive",
-        title: "Clustering failed",
-        description: error.message || "An error occurred. Please try again.",
-      });
+      toast({ variant: "destructive", title: "Clustering failed", description: getSafeErrorMessage(error) });
     } finally {
       setClustering(false);
     }
@@ -415,7 +358,7 @@ export default function EventDetail() {
       if (error) throw error;
       toast({ title: "Person removed", description: `"${personName}" has been removed from this event.` });
       fetchPersons();
-    } catch (error: any) {̥̥
+    } catch (error: any) {
       toast({ variant: "destructive", title: "Delete failed", description: getSafeErrorMessage(error) });
     }
   };
@@ -646,18 +589,9 @@ export default function EventDetail() {
                         ))}
                       </div>
 
-                      {!uploading && uploadedImageUrls.length > 0 && (
-                        <Button
-                          onClick={async () => {
-                            setActiveTab("cluster");
-                            // Small delay to let tab switch animate, then auto-start clustering
-                            setTimeout(() => handleCluster(), 300);
-                          }}
-                          className="w-full bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-600/90 text-white font-semibold"
-                          size="lg"
-                        >
-                          <Sparkles className="mr-2 h-5 w-5" />
-                          Start Clustering
+                      {!uploading && (
+                        <Button onClick={() => setActiveTab("cluster")} className="w-full">
+                          Go to Clustering <ArrowRight className="ml-2 h-4 w-4" />
                         </Button>
                       )}
                     </div>
@@ -672,183 +606,71 @@ export default function EventDetail() {
               <CardHeader><CardTitle>Cluster Faces</CardTitle><CardDescription>AI will automatically group faces into individuals</CardDescription></CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  <div className="text-center py-8">
-                    {clustering ? (
-                      <div className="flex flex-col items-center gap-6 py-6 select-none">
-                        <style>{`
-                          @keyframes spin3d {
-                            0%   { transform: rotateY(0deg) rotateX(15deg); }
-                            100% { transform: rotateY(360deg) rotateX(15deg); }
-                          }
-                          @keyframes orbit3d-a {
-                            0%   { transform: rotateY(0deg)   translateX(68px) rotateY(0deg);   }
-                            100% { transform: rotateY(360deg) translateX(68px) rotateY(-360deg); }
-                          }
-                          @keyframes orbit3d-b {
-                            0%   { transform: rotateY(60deg)  translateX(52px) rotateY(-60deg);  }
-                            100% { transform: rotateY(420deg) translateX(52px) rotateY(-420deg); }
-                          }
-                          @keyframes orbit3d-c {
-                            0%   { transform: rotateY(120deg) translateX(36px) rotateY(-120deg); }
-                            100% { transform: rotateY(480deg) translateX(36px) rotateY(-480deg); }
-                          }
-                          @keyframes orbit3d-d {
-                            0%   { transform: rotateY(180deg) translateX(68px) rotateY(-180deg); }
-                            100% { transform: rotateY(540deg) translateX(68px) rotateY(-540deg); }
-                          }
-                          @keyframes orbit3d-e {
-                            0%   { transform: rotateY(240deg) translateX(52px) rotateY(-240deg); }
-                            100% { transform: rotateY(600deg) translateX(52px) rotateY(-600deg); }
-                          }
-                          @keyframes orbit3d-f {
-                            0%   { transform: rotateY(300deg) translateX(36px) rotateY(-300deg); }
-                            100% { transform: rotateY(660deg) translateX(36px) rotateY(-660deg); }
-                          }
-                          @keyframes glow3d {
-                            0%,100% { box-shadow: 0 0 20px rgba(59,130,246,0.4), 0 0 40px rgba(59,130,246,0.2), inset 0 1px 0 rgba(255,255,255,0.2); }
-                            50%     { box-shadow: 0 0 40px rgba(59,130,246,0.7), 0 0 80px rgba(59,130,246,0.3), inset 0 1px 0 rgba(255,255,255,0.3); }
-                          }
-                          @keyframes scanBeam {
-                            0%   { top: 0%;    opacity: 0; }
-                            5%   { opacity: 1; }
-                            95%  { opacity: 1; }
-                            100% { top: 100%;  opacity: 0; }
-                          }
-                          @keyframes particleDrift {
-                            0%   { transform: translateY(0)   translateX(0)   scale(1);   opacity: 0.8; }
-                            50%  { transform: translateY(-12px) translateX(6px) scale(1.2); opacity: 1;   }
-                            100% { transform: translateY(0)   translateX(0)   scale(1);   opacity: 0.8; }
-                          }
-                          @keyframes pulse3d {
-                            0%,100% { transform: scale(1);    opacity: 0.15; }
-                            50%     { transform: scale(1.08); opacity: 0.3;  }
-                          }
-                          @keyframes stepSlide {
-                            0%   { opacity: 0; transform: translateX(-8px); }
-                            100% { opacity: 1; transform: translateX(0); }
-                          }
-                        `}</style>
-
-                        {/* 3D Face Clustering Sphere */}
-                        <div style={{ perspective: "600px", perspectiveOrigin: "50% 50%" }} className="relative w-52 h-52">
-                          <div style={{ transformStyle: "preserve-3d", animation: "spin3d 8s linear infinite", width: "100%", height: "100%", position: "relative" }}>
-                            
-                            {/* Outer glow rings */}
-                            <div className="absolute inset-0 rounded-full border border-blue-400/20" style={{ animation: "pulse3d 2s ease-in-out infinite" }} />
-                            <div className="absolute inset-3 rounded-full border border-blue-400/15" style={{ animation: "pulse3d 2s ease-in-out infinite", animationDelay: "0.4s" }} />
-                            <div className="absolute inset-6 rounded-full border border-blue-400/10" style={{ animation: "pulse3d 2s ease-in-out infinite", animationDelay: "0.8s" }} />
-
-                            {/* 6 orbiting face nodes at different 3D depths */}
-                            {[
-                              { anim: "orbit3d-a", dur: "3.2s", bg: "from-blue-500 to-blue-600", emoji: "😊", shadow: "shadow-blue-500/50" },
-                              { anim: "orbit3d-b", dur: "2.8s", bg: "from-violet-500 to-violet-600", emoji: "😄", shadow: "shadow-violet-500/50" },
-                              { anim: "orbit3d-c", dur: "3.6s", bg: "from-cyan-500 to-cyan-600", emoji: "🙂", shadow: "shadow-cyan-500/50" },
-                              { anim: "orbit3d-d", dur: "2.5s", bg: "from-blue-400 to-blue-500", emoji: "😁", shadow: "shadow-blue-400/50" },
-                              { anim: "orbit3d-e", dur: "3.9s", bg: "from-indigo-500 to-indigo-600", emoji: "😃", shadow: "shadow-indigo-500/50" },
-                              { anim: "orbit3d-f", dur: "2.2s", bg: "from-sky-500 to-sky-600", emoji: "🤩", shadow: "shadow-sky-500/50" },
-                            ].map((node, i) => (
-                              <div key={i} className="absolute" style={{
-                                top: "50%", left: "50%",
-                                marginTop: "-14px", marginLeft: "-14px",
-                                animation: `${node.anim} ${node.dur} linear infinite`,
-                                animationDelay: `${i * 0.3}s`,
-                              }}>
-                                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${node.bg} shadow-lg ${node.shadow} flex items-center justify-center text-xs border border-white/20`}
-                                  style={{ backdropFilter: "blur(4px)" }}>
-                                  <span>{node.emoji}</span>
-                                </div>
-                              </div>
-                            ))}
-
-                            {/* Center 3D core */}
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <div
-                                className="relative w-20 h-20 rounded-2xl flex items-center justify-center overflow-hidden border border-blue-400/30"
-                                style={{
-                                  background: "linear-gradient(135deg, rgba(59,130,246,0.25) 0%, rgba(139,92,246,0.15) 100%)",
-                                  animation: "glow3d 2s ease-in-out infinite",
-                                  backdropFilter: "blur(8px)",
-                                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.2)",
-                                }}
-                              >
-                                {/* Scan beam */}
-                                <div className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-blue-400 to-transparent"
-                                  style={{ animation: "scanBeam 2s linear infinite" }} />
-                                {/* Corner brackets */}
-                                <div className="absolute top-1.5 left-1.5 w-3 h-3 border-t-2 border-l-2 border-blue-400/70 rounded-tl" />
-                                <div className="absolute top-1.5 right-1.5 w-3 h-3 border-t-2 border-r-2 border-blue-400/70 rounded-tr" />
-                                <div className="absolute bottom-1.5 left-1.5 w-3 h-3 border-b-2 border-l-2 border-blue-400/70 rounded-bl" />
-                                <div className="absolute bottom-1.5 right-1.5 w-3 h-3 border-b-2 border-r-2 border-blue-400/70 rounded-br" />
-                                <Users className="h-8 w-8 text-blue-400 relative z-10" />
-                              </div>
-                            </div>
-
-                            {/* Floating particles */}
-                            {[...Array(8)].map((_, i) => (
-                              <div key={i}
-                                className="absolute w-1 h-1 rounded-full bg-blue-400"
-                                style={{
-                                  top: `${15 + Math.sin(i * 0.8) * 35}%`,
-                                  left: `${15 + Math.cos(i * 0.8) * 35}%`,
-                                  animation: `particleDrift ${1.5 + i * 0.2}s ease-in-out infinite`,
-                                  animationDelay: `${i * 0.25}s`,
-                                  opacity: 0.6,
-                                }}
-                              />
-                            ))}
+                  {clustering ? (
+                    <div className="text-center py-16">
+                      {/* Morphing blob animation inspired by ClientBook Lottie */}
+                      <div className="relative w-32 h-32 mx-auto mb-8">
+                        <div className="absolute inset-0 rounded-full bg-primary/10 animate-ping" style={{ animationDuration: "2s" }} />
+                        <div className="absolute inset-2 rounded-full bg-primary/15 animate-pulse" style={{ animationDuration: "1.5s" }} />
+                        {/* Orbiting blobs */}
+                        {[0, 1, 2, 3, 4].map((i) => (
+                          <div key={i} className="absolute" style={{
+                            width: `${12 + i * 4}px`, height: `${12 + i * 4}px`,
+                            borderRadius: "50%",
+                            background: `hsl(var(--primary) / ${0.3 + i * 0.15})`,
+                            animation: `morphOrbit ${2 + i * 0.5}s ease-in-out infinite`,
+                            animationDelay: `${i * 0.3}s`,
+                            top: "50%", left: "50%",
+                            transform: "translate(-50%, -50%)",
+                          }} />
+                        ))}
+                        {/* Center icon */}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="h-14 w-14 rounded-2xl bg-primary/20 flex items-center justify-center backdrop-blur-sm">
+                            <Users className="h-7 w-7 text-primary" />
                           </div>
                         </div>
-
-                        {/* Status */}
-                        <div className="text-center space-y-1">
-                          <p className="text-base font-bold text-foreground tracking-tight">AI Clustering in Progress</p>
-                          <p className="text-sm text-muted-foreground">Face++ is comparing and grouping faces</p>
+                      </div>
+                      <style>{`
+                        @keyframes morphOrbit {
+                          0% { transform: translate(-50%, -50%) translateX(0) translateY(0) scale(1); }
+                          25% { transform: translate(-50%, -50%) translateX(30px) translateY(-20px) scale(1.3); }
+                          50% { transform: translate(-50%, -50%) translateX(-10px) translateY(-40px) scale(0.8); }
+                          75% { transform: translate(-50%, -50%) translateX(-30px) translateY(10px) scale(1.2); }
+                          100% { transform: translate(-50%, -50%) translateX(0) translateY(0) scale(1); }
+                        }
+                      `}</style>
+                      <h3 className="text-xl font-semibold text-foreground mb-3">Analyzing faces with AI...</h3>
+                      <div className="max-w-xs mx-auto space-y-2">
+                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                          <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+                          <span>Detecting faces in photos</span>
                         </div>
-
-                        {/* Animated step list */}
-                        <div className="w-full max-w-sm space-y-2">
-                          {[
-                            { icon: "🔍", label: "Detecting faces in each photo", delay: "0s" },
-                            { icon: "🔗", label: "Comparing face identities (Face++)", delay: "0.15s" },
-                            { icon: "🧠", label: "Building person clusters", delay: "0.3s" },
-                            { icon: "✅", label: "Saving results to database", delay: "0.45s" },
-                          ].map((step, i) => (
-                            <div key={i}
-                              className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm"
-                              style={{ animation: `stepSlide 0.4s ease-out ${step.delay} both` }}
-                            >
-                              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center text-sm shrink-0"
-                                style={{ animation: `particleDrift ${1.2 + i * 0.3}s ease-in-out infinite`, animationDelay: `${i * 0.4}s` }}>
-                                {step.icon}
-                              </div>
-                              <span className="text-xs text-muted-foreground flex-1">{step.label}</span>
-                              <div className="flex gap-0.5">
-                                {[0,1,2].map(j => (
-                                  <div key={j} className="w-1 h-1 rounded-full bg-primary/60"
-                                    style={{ animation: `particleDrift 0.8s ease-in-out infinite`, animationDelay: `${i*0.2 + j*0.15}s` }} />
-                                ))}
-                              </div>
-                            </div>
-                          ))}
+                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                          <div className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "0.5s" }} />
+                          <span>Matching similar faces across images</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                          <div className="h-2 w-2 rounded-full bg-primary/40 animate-pulse" style={{ animationDelay: "1s" }} />
+                          <span>Grouping persons & merging duplicates</span>
                         </div>
                       </div>
-                    ) : (
-
-                      <>
-                        <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-muted-foreground mb-6">
-                          {uploadedImageUrls.length > 0
-                            ? `${uploadedImageUrls.length} new photos ready to cluster`
-                            : event.status === 'created'
-                              ? 'Upload photos first, then come back here to cluster'
-                              : 'Click below to run (or re-run) face clustering on all uploaded photos'}
-                        </p>
-                        <Button onClick={handleCluster} disabled={clustering} size="lg">
-                          <Sparkles className="mr-2 h-5 w-5" />Start Clustering
-                        </Button>
-                      </>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+                      <p className="text-muted-foreground mb-6">
+                        {uploadedImageUrls.length > 0 
+                          ? `${uploadedImageUrls.length} new photos ready to cluster`
+                          : event.status === 'created' 
+                            ? 'Upload photos first, then come back here to cluster'
+                            : 'Click below to run (or re-run) face clustering on all uploaded photos'}
+                      </p>
+                      <Button onClick={handleCluster} disabled={clustering} size="lg">
+                        Start Clustering
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -923,7 +745,7 @@ export default function EventDetail() {
                             {groupPersons.map(p => (
                               <div key={p.id} className="w-10 h-10 rounded-full border-2 border-background overflow-hidden bg-muted">
                                 {p.previewImage ? (
-                                  <FaceCropImage src={p.previewImage} bbox={p.previewBbox} alt={p.name || ''} />
+                                  <img src={p.previewImage} alt={p.name || ''} className="w-full h-full object-cover" />
                                 ) : (
                                   <div className="flex items-center justify-center h-full"><Users className="h-4 w-4 text-muted-foreground" /></div>
                                 )}
@@ -987,163 +809,6 @@ export default function EventDetail() {
   );
 }
 
-// ── PersonPhotosModal ──
-// Google Photos-style face crop using CSS background-image
-// Works correctly inside overflow-hidden circles unlike transform: scale()
-function FaceCropImage({
-  src, bbox, alt, className = ""
-}: {
-  src: string;
-  bbox?: { x: number; y: number; w: number; h: number } | null;
-  alt: string;
-  className?: string;
-}) {
-  // Validate bbox — must be percentage values (3–85%)
-  const validBbox = bbox &&
-    typeof bbox.x === "number" && typeof bbox.y === "number" &&
-    typeof bbox.w === "number" && typeof bbox.h === "number" &&
-    bbox.w >= 3 && bbox.h >= 3 && bbox.w <= 85 && bbox.h <= 85;
-
-  if (!validBbox) {
-    // No bbox: use img with object-fit cover + object-position top-center
-    // This reliably zooms into upper portion where faces typically are
-    return (
-      <img
-        src={src}
-        alt={alt}
-        className={`w-full h-full ${className}`}
-        style={{
-          objectFit: "cover",
-          objectPosition: "center 20%",
-        }}
-      />
-    );
-  }
-
-  // We have valid bbox — use it for precise face crop
-  // Face center as fraction (0–1)
-  const fcx = (bbox.x + bbox.w / 2) / 100;
-  const fcy = (bbox.y + bbox.h / 2) / 100;
-
-  // How much to zoom: we want the face to fill 50% of the circle
-  // zoom = 50 / face_width_percent, clamped between 1.8x and 6x
-  const zoom = Math.min(Math.max(50 / bbox.w, 1.8), 6);
-
-  // CSS background-position correct formula:
-  // bgPos% = (faceCenter - 0.5/zoom) / (1 - 1/zoom)
-  // This maps image coordinate to background-position space
-  const div = 1 - 1 / zoom;
-  const bpx = div < 0.001 ? 0.5 : Math.min(Math.max((fcx - 0.5 / zoom) / div, 0), 1);
-  const bpy = div < 0.001 ? 0.3 : Math.min(Math.max(((fcy - 0.05) - 0.5 / zoom) / div, 0), 1);
-
-  // Use background-image approach — works correctly inside overflow-hidden circles
-  // (transform: scale on img does NOT respect overflow-hidden)
-  return (
-    <div
-      className={`w-full h-full ${className}`}
-      style={{
-        backgroundImage: `url("${src}")`,
-        backgroundSize: `${Math.round(zoom * 100)}%`,
-        backgroundPosition: `${(bpx * 100).toFixed(1)}% ${(bpy * 100).toFixed(1)}%`,
-        backgroundRepeat: "no-repeat",
-      }}
-    />
-  );
-}
-
-function getFaceCropStyle(bbox: { x: number; y: number; w: number; h: number } | null | undefined): React.CSSProperties {
-  if (!bbox || bbox.w <= 0 || bbox.h <= 0 || bbox.w > 100 || bbox.h > 100 || bbox.w < 3) {
-    return { objectFit: "cover" as const, objectPosition: "center 15%" };
-  }
-  const cx = Math.min(Math.max(bbox.x + bbox.w / 2, 5), 95);
-  const cy = Math.min(Math.max(bbox.y + bbox.h / 2 - 8, 3), 88);
-  const scale = Math.min(Math.max(55 / bbox.w, 1.5), 5);
-  return {
-    objectFit: "cover" as const,
-    objectPosition: `${cx}% ${cy}%`,
-    transform: `scale(${scale.toFixed(2)})`,
-    transformOrigin: `${cx}% ${cy}%`,
-  };
-}
-
-function PersonPhotosModal({ person, open, onClose }: { person: PersonData; open: boolean; onClose: () => void }) {
-  const [photos, setPhotos] = useState<{ id: string; image_url: string }[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [lightbox, setLightbox] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    supabase.from("person_images").select("id, image_url").eq("person_id", person.id)
-      .order("created_at", { ascending: true })
-      .then(({ data }) => { setPhotos(data || []); setLoading(false); });
-  }, [open, person.id]);
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {person.previewImage && (
-              <img src={person.previewImage} className="w-8 h-8 rounded-full object-cover" />
-            )}
-            {person.name || `Person ${person.person_id}`}
-            <span className="text-sm font-normal text-muted-foreground ml-1">
-              — {person.imageCount ?? 0} photos
-            </span>
-          </DialogTitle>
-        </DialogHeader>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : photos.length === 0 ? (
-          <div className="text-center py-16 text-muted-foreground">No photos found</div>
-        ) : (
-          <div className="overflow-y-auto flex-1">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 p-1">
-              {photos.map((photo, idx) => (
-                <div
-                  key={photo.id}
-                  className="aspect-square rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary transition-all relative group"
-                  onClick={() => setLightbox(idx)}
-                >
-                  <img src={photo.image_url} alt={`Photo ${idx + 1}`}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                    <Eye className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Lightbox inside modal */}
-        {lightbox !== null && (
-          <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center" onClick={() => setLightbox(null)}>
-            <button className="absolute top-4 right-4 p-2 text-white/70 hover:text-white" onClick={() => setLightbox(null)}>
-              <X className="h-6 w-6" />
-            </button>
-            <button className="absolute left-4 top-1/2 -translate-y-1/2 p-2 text-white/70 hover:text-white"
-              onClick={e => { e.stopPropagation(); setLightbox(i => i !== null ? Math.max(0, i - 1) : null); }}>
-              <ChevronLeft className="h-8 w-8" />
-            </button>
-            <img src={photos[lightbox].image_url} className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg"
-              onClick={e => e.stopPropagation()} />
-            <button className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-white/70 hover:text-white"
-              onClick={e => { e.stopPropagation(); setLightbox(i => i !== null ? Math.min(photos.length - 1, i + 1) : null); }}>
-              <ChevronRight className="h-8 w-8" />
-            </button>
-            <p className="absolute bottom-4 text-white/50 text-sm">{lightbox + 1} / {photos.length}</p>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 // ── PersonCard ──
 
 interface PersonCardProps {
@@ -1162,7 +827,10 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showPhotos, setShowPhotos] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [images, setImages] = useState<{ id: string; image_url: string; moment_type: string | null; smile_score: number | null }[]>([]);
+  const [loadingImages, setLoadingImages] = useState(false);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const { toast } = useToast();
 
   const handleSave = () => { if (name.trim()) { onSaveName(person.id, name); setEditing(false); } };
@@ -1195,6 +863,33 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
     }
   };
 
+  const handleViewImages = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGalleryOpen(true);
+    if (images.length > 0) return;
+    setLoadingImages(true);
+    try {
+      const { data, error } = await supabase
+        .from("person_images")
+        .select("id, image_url, moment_type, smile_score")
+        .eq("person_id", person.id)
+        .order("created_at");
+      if (error) throw error;
+      setImages(data || []);
+    } catch {
+      toast({ variant: "destructive", title: "Failed to load images" });
+    } finally {
+      setLoadingImages(false);
+    }
+  };
+
+  const handlePrevImage = () => {
+    if (selectedImageIndex !== null && selectedImageIndex > 0) setSelectedImageIndex(selectedImageIndex - 1);
+  };
+  const handleNextImage = () => {
+    if (selectedImageIndex !== null && selectedImageIndex < images.length - 1) setSelectedImageIndex(selectedImageIndex + 1);
+  };
+
   return (
     <div className="group flex flex-col items-center">
       <button
@@ -1210,25 +905,12 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
           }`}
       >
         {person.previewImage ? (
-          <FaceCropImage
-            src={person.previewImage}
-            bbox={person.previewBbox}
-            alt={person.name || `Person ${person.person_id}`}
-          />
+          <img src={person.previewImage} alt={person.name || `Person ${person.person_id}`} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110" />
         ) : (
           <div className="flex items-center justify-center h-full bg-muted"><Users className="h-10 w-10 text-muted-foreground" /></div>
         )}
         {!mergeMode && (
           <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-full" />
-        )}
-        {/* View Photos button on hover */}
-        {!mergeMode && (person.imageCount ?? 0) > 0 && (
-          <button
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200 bg-white/90 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center gap-1 hover:bg-white shadow-md whitespace-nowrap z-10"
-            onClick={e => { e.stopPropagation(); setShowPhotos(true); }}
-          >
-            <Eye className="h-3 w-3" />View Photos
-          </button>
         )}
         {mergeMode && isSelectedForMerge && (
           <div className="absolute inset-0 bg-primary/20 flex items-center justify-center rounded-full">
@@ -1242,6 +924,18 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
 
       <p className="mt-2 text-sm font-medium text-foreground text-center truncate w-full">{person.name || `Person ${person.person_id}`}</p>
       <p className="text-xs text-muted-foreground">{person.imageCount ?? 0} photo{(person.imageCount ?? 0) !== 1 ? 's' : ''}</p>
+
+      {/* View Images button - always visible when not in merge mode and has images */}
+      {!mergeMode && (person.imageCount ?? 0) > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2 h-7 text-xs w-full opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          onClick={handleViewImages}
+        >
+          <Eye className="mr-1 h-3 w-3" />View Photos
+        </Button>
+      )}
 
       {expanded && !mergeMode && (
         <div className="mt-3 w-full space-y-3 p-3 rounded-xl border border-border bg-card shadow-md animate-in fade-in-0 zoom-in-95 duration-200">
@@ -1291,8 +985,99 @@ function PersonCard({ person, onSaveName, onGenerateQR, onDeletePerson, mergeMod
         </div>
       )}
 
-      {/* Photos Modal */}
-      <PersonPhotosModal person={person} open={showPhotos} onClose={() => setShowPhotos(false)} />
+      {/* Image Gallery Dialog */}
+      <Dialog open={galleryOpen} onOpenChange={setGalleryOpen}>
+        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="p-6 pb-0">
+            <DialogTitle className="text-xl font-bold">
+              {person.name || `Person ${person.person_id}`} — {images.length} Photo{images.length !== 1 ? 's' : ''}
+            </DialogTitle>
+          </DialogHeader>
+
+          {loadingImages ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : selectedImageIndex !== null ? (
+            /* Lightbox view */
+            <div className="relative flex items-center justify-center bg-black/95 min-h-[60vh] animate-in fade-in-0 zoom-in-95 duration-300">
+              <button
+                onClick={() => setSelectedImageIndex(null)}
+                className="absolute top-4 right-4 z-10 p-2 rounded-full bg-background/20 hover:bg-background/40 transition-colors"
+              >
+                <X className="h-5 w-5 text-primary-foreground" />
+              </button>
+
+              {selectedImageIndex > 0 && (
+                <button
+                  onClick={handlePrevImage}
+                  className="absolute left-4 z-10 p-2 rounded-full bg-background/20 hover:bg-background/40 transition-colors"
+                >
+                  <ChevronLeft className="h-6 w-6 text-primary-foreground" />
+                </button>
+              )}
+
+              <img
+                key={images[selectedImageIndex].id}
+                src={images[selectedImageIndex].image_url}
+                alt={`Photo ${selectedImageIndex + 1}`}
+                className="max-h-[75vh] max-w-full object-contain animate-in fade-in-0 zoom-in-95 duration-300"
+              />
+
+              {selectedImageIndex < images.length - 1 && (
+                <button
+                  onClick={handleNextImage}
+                  className="absolute right-4 z-10 p-2 rounded-full bg-background/20 hover:bg-background/40 transition-colors"
+                >
+                  <ChevronRight className="h-6 w-6 text-primary-foreground" />
+                </button>
+              )}
+
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-background/30 backdrop-blur-sm">
+                <span className="text-sm text-primary-foreground font-medium">
+                  {selectedImageIndex + 1} / {images.length}
+                </span>
+                {images[selectedImageIndex].moment_type && (
+                  <Badge variant="secondary" className="text-[10px] h-5">
+                    {images[selectedImageIndex].moment_type}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Grid view */
+            <div className="p-6 pt-4 overflow-y-auto max-h-[70vh]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {images.map((img, idx) => (
+                  <button
+                    key={img.id}
+                    onClick={() => setSelectedImageIndex(idx)}
+                    className="group/img relative aspect-square rounded-xl overflow-hidden border border-border bg-muted hover:border-primary transition-all duration-200 hover:shadow-lg hover:scale-[1.03] focus:outline-none focus:ring-2 focus:ring-primary animate-in fade-in-0 zoom-in-90 duration-300"
+                    style={{ animationDelay: `${idx * 50}ms`, animationFillMode: 'both' }}
+                  >
+                    <img
+                      src={img.image_url}
+                      alt={`Photo ${idx + 1}`}
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover/img:scale-110"
+                      loading="lazy"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover/img:opacity-100 transition-opacity duration-200" />
+                    <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between opacity-0 group-hover/img:opacity-100 transition-opacity duration-200">
+                      {img.moment_type && (
+                        <Badge variant="secondary" className="text-[10px] h-5 bg-background/70 backdrop-blur-sm">
+                          {img.moment_type}
+                        </Badge>
+                      )}
+                      <Eye className="h-4 w-4 text-primary-foreground drop-shadow" />
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+ 
